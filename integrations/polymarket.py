@@ -181,14 +181,21 @@ async def place_trade(
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import OrderArgs, OrderType
 
+        from py_clob_client.clob_types import ApiCreds
         client = ClobClient(
             host=CLOB_BASE,
             chain_id=137,  # Polygon mainnet
-            private_key=settings.polymarket_private_key,
+            key=settings.polymarket_private_key,
             signature_type=2,  # EIP-712
-            funder=None,
         )
-        client.set_api_creds(client.create_or_derive_api_creds())
+        creds = client.create_or_derive_api_creds()
+        client = ClobClient(
+            host=CLOB_BASE,
+            chain_id=137,
+            key=settings.polymarket_private_key,
+            creds=creds,
+            signature_type=2,
+        )
 
         # Determine token_id for the outcome
         market = await get_market_by_id(condition_id)
