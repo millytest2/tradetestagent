@@ -170,37 +170,56 @@ async def predict_market(
     reasoning = ""
     recommendation = "PASS"
 
-    try:
-        with _client.messages.stream(
-            model=settings.llm_model,
-            max_tokens=1024,
-            thinking={"type": "adaptive"},
-            messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            response = stream.get_final_message()
-
-        # Extract text content
-        text_content = next(
-            (b.text for b in response.content if b.type == "text"), ""
+    if not settings.anthropic_api_key:
+        # Demo mode — use rule-based prior with boosted confidence from sentiment
+        from ml.calibrator import _rule_based_probability
+        llm_prob = _rule_based_probability(features)
+        s = report.sentiment
+        confidence = min(0.75, 0.55 + abs(s.compound) * 0.4)
+        reasoning = (
+            f"[DEMO — no API key] Rule-based prior: sentiment={s.compound:+.3f}, "
+            f"market={market.yes_price:.3f}. Set ANTHROPIC_API_KEY for full LLM reasoning."
         )
-        parsed = _parse_llm_response(text_content)
+        recommendation = (
+            "YES" if llm_prob > market.yes_price + settings.min_edge
+            else "NO" if (1 - llm_prob) > market.no_price + settings.min_edge
+            else "PASS"
+        )
+        logger.info(
+            "[DEMO] LLM P(YES)=%.3f, conf=%.2f, rec=%s for '%s'",
+            llm_prob, confidence, recommendation, market.question[:60],
+        )
+    else:
+        try:
+            with _client.messages.stream(
+                model=settings.llm_model,
+                max_tokens=1024,
+                thinking={"type": "adaptive"},
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                response = stream.get_final_message()
 
-        if parsed:
-            llm_prob = float(parsed.get("llm_yes_probability", xgb_prob))
-            confidence = float(parsed.get("confidence", 0.5))
-            reasoning = parsed.get("reasoning", "")
-            key_insight = parsed.get("key_insight", "")
-            recommendation = parsed.get("recommendation", "PASS")
-            if key_insight:
-                reasoning = f"{reasoning} Key insight: {key_insight}"
-
-            logger.info(
-                "LLM P(YES)=%.3f, conf=%.2f, rec=%s for '%s'",
-                llm_prob, confidence, recommendation, market.question[:60],
+            text_content = next(
+                (b.text for b in response.content if b.type == "text"), ""
             )
+            parsed = _parse_llm_response(text_content)
 
-    except Exception as e:
-        logger.error("LLM prediction failed: %s — using XGBoost only", e)
+            if parsed:
+                llm_prob = float(parsed.get("llm_yes_probability", xgb_prob))
+                confidence = float(parsed.get("confidence", 0.5))
+                reasoning = parsed.get("reasoning", "")
+                key_insight = parsed.get("key_insight", "")
+                recommendation = parsed.get("recommendation", "PASS")
+                if key_insight:
+                    reasoning = f"{reasoning} Key insight: {key_insight}"
+
+                logger.info(
+                    "LLM P(YES)=%.3f, conf=%.2f, rec=%s for '%s'",
+                    llm_prob, confidence, recommendation, market.question[:60],
+                )
+
+        except Exception as e:
+            logger.error("LLM prediction failed: %s — using XGBoost only", e)
 
     # ── Ensemble ──────────────────────────────────────────────────────────────
     # Weight XGBoost more heavily when it has training data

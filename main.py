@@ -99,7 +99,7 @@ def _print_stats() -> None:
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 
-async def run_pipeline(dry_run: bool = True, top_n: int = 10) -> None:
+async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = False) -> None:
     """Execute one full scan→research→predict→risk cycle."""
 
     cycle_start = datetime.utcnow()
@@ -107,7 +107,22 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10) -> None:
 
     # ── Step 1: Scan ──────────────────────────────────────────────────────────
     console.print("[bold]Step 1[/bold] Scanning markets...")
-    flagged = await scan_markets(limit=settings.scan_limit)
+
+    if use_mock:
+        from demo_data import make_markets
+        from agents.scan_agent import _passes_base_filter, _detect_anomaly, _priority_score, FlaggedMarket
+        raw = make_markets()
+        flagged = []
+        for m in raw:
+            if _passes_base_filter(m):
+                is_flagged, reason = _detect_anomaly(m)
+                m.is_flagged = is_flagged; m.flag_reason = reason
+                score = _priority_score(m, reason)
+                flagged.append(FlaggedMarket(market=m, flag_reason=reason or "base filter pass", priority_score=score))
+        flagged.sort(key=lambda x: x.priority_score, reverse=True)
+        console.print(f"  [dim](mock data — {len(raw)} markets injected)[/dim]")
+    else:
+        flagged = await scan_markets(limit=settings.scan_limit)
 
     if not flagged:
         console.print("[yellow]No markets passed the scan filter — skipping cycle[/yellow]")
@@ -122,7 +137,24 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10) -> None:
 
     # ── Step 2: Research (parallel) ────────────────────────────────────────────
     console.print("[bold]Step 2[/bold] Running parallel research agents...")
-    reports = await research_markets_parallel(top_flagged, max_concurrent=5)
+    if use_mock:
+        from demo_data import make_posts
+        from agents.research_agent import _compute_sentiment, _compare_narrative_to_odds
+        from core.models import ResearchReport
+        reports = []
+        for fm in top_flagged:
+            posts = make_posts(fm.market.question)
+            sentiment = _compute_sentiment(posts)
+            narrative = _compare_narrative_to_odds(sentiment, fm.market.yes_price)
+            key_claims = [p.text[:200] for p in sorted(posts, key=lambda p: p.likes+p.retweets+p.score, reverse=True)[:5]]
+            reports.append(ResearchReport(
+                market_id=fm.market.condition_id, question=fm.market.question,
+                posts=posts, sentiment=sentiment, narrative_summary=narrative,
+                key_claims=key_claims,
+            ))
+        console.print(f"  [dim](mock social posts — {sum(len(r.posts) for r in reports)} posts total)[/dim]")
+    else:
+        reports = await research_markets_parallel(top_flagged, max_concurrent=5)
     console.print(f"  ✓ Research complete for [green]{len(reports)}[/green] markets")
 
     # ── Steps 3 & 4: Predict + Risk ────────────────────────────────────────────
@@ -183,11 +215,12 @@ async def _run_pending_postmortems() -> None:
         with SessionLocal() as session:
             # Find losses that don't yet have a postmortem
             subq = session.query(PostmortemRow.trade_id).distinct().subquery()
+            analyzed_ids = session.query(PostmortemRow.trade_id).distinct()
             unanalyzed = (
                 session.query(TradeRow)
                 .filter(
                     TradeRow.outcome == "LOSS",
-                    ~TradeRow.id.in_(subq),
+                    TradeRow.id.not_in(analyzed_ids),
                 )
                 .limit(5)
                 .all()
@@ -249,10 +282,9 @@ async def main_loop(dry_run: bool, interval_seconds: int) -> None:
 
     if not settings.anthropic_api_key:
         console.print(
-            "[red]ERROR: ANTHROPIC_API_KEY not set. "
-            "Copy .env.example → .env and fill in your key.[/red]"
+            "[yellow]⚠  ANTHROPIC_API_KEY not set — running in demo mode "
+            "(rule-based predictions, no LLM calls)[/yellow]"
         )
-        sys.exit(1)
 
     while True:
         try:
@@ -296,6 +328,10 @@ def parse_args() -> argparse.Namespace:
         "--top-n", type=int, default=10,
         help="Number of top-priority markets to research per cycle (default: 10)",
     )
+    p.add_argument(
+        "--demo", action="store_true",
+        help="Demo mode: run full pipeline with rule-based predictions (no API key needed)",
+    )
     return p.parse_args()
 
 
@@ -326,9 +362,14 @@ if __name__ == "__main__":
         import time
         time.sleep(5)
 
-    if args.run_once:
+    use_mock = args.demo or not settings.anthropic_api_key
+    if use_mock:
+        # Lower confidence threshold for demo so we can see trade signals fire
+        settings.min_confidence = 0.51
+
+    if args.run_once or args.demo:
         _print_banner()
-        asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n))
+        asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n, use_mock=use_mock))
         _print_stats()
     else:
         asyncio.run(main_loop(dry_run=dry_run, interval_seconds=args.interval))
