@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment (contains secrets)
+.env
+
+# Database & model artifacts
+*.db
+*.joblib
+*.pkl
+
+# Logs
+*.log
+
+# OS
+.DS_Store
