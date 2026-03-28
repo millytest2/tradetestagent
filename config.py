@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     model_path: str = "./ml/xgb_calibrator.joblib"
 
     # ── LLM Model ─────────────────────────────────────────────────────────────
-    llm_model: str = "claude-opus-4-6"
+    llm_model: str = "claude-sonnet-4-6"
 
     # ── Polymarket endpoints ──────────────────────────────────────────────────
     gamma_api_url: str = "https://gamma-api.polymarket.com"
