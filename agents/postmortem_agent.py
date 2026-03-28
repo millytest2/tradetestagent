@@ -65,15 +65,20 @@ async def _ask_specialist(
             (b.text for b in response.content if b.type == "text"), ""
         )
 
-        # Parse structured JSON from response
+        # Parse structured JSON from response — handles markdown fences and nested objects
         import re
-        match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+        text_clean = re.sub(r'```(?:json)?\s*', '', text).strip()
         parsed = {}
-        if match:
+        for attempt in [
+            lambda: json.loads(text_clean),
+            lambda: json.loads(text_clean[text_clean.index('{'):text_clean.rindex('}')+1]),
+            lambda: json.loads(re.search(r'\{.*\}', text_clean, re.DOTALL).group()),
+        ]:
             try:
-                parsed = json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
+                parsed = attempt()
+                break
+            except Exception:
+                continue
 
         finding = parsed.get("finding", text[:500])
         root_cause = parsed.get("root_cause", "Unknown")

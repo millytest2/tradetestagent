@@ -123,20 +123,36 @@ Respond in this exact JSON format:
 
 
 def _parse_llm_response(text: str) -> dict:
-    """Extract JSON from the LLM response."""
+    """Extract JSON from the LLM response — handles markdown fences and nested objects."""
     import json, re
-    # Try to find JSON block
-    match = re.search(r'\{[^{}]+\}', text, re.DOTALL)
+
+    # Strip markdown code fences (```json ... ``` or ``` ... ```)
+    text = re.sub(r'```(?:json)?\s*', '', text).strip()
+
+    # 1. Direct parse of whole text
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Find outermost { ... } block (handles nested objects unlike [^{}]+)
+    try:
+        start = text.index('{')
+        end = text.rindex('}') + 1
+        return json.loads(text[start:end])
+    except (ValueError, json.JSONDecodeError):
+        pass
+
+    # 3. Last resort: greedy regex
+    match = re.search(r'\{.*\}', text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
         except json.JSONDecodeError:
             pass
-    # Fallback: try parsing the whole text
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return {}
+
+    logger.warning("Failed to parse LLM JSON — raw: %s", text[:300])
+    return {}
 
 
 async def predict_market(
