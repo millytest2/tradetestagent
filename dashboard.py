@@ -53,6 +53,9 @@ st.markdown("""
 
 init_db()
 REFRESH_INTERVAL = 5
+GO_LIVE_TARGET = settings.bankroll_usdc * 2   # 2x = go live milestone
+GO_LIVE_WIN_RATE = 0.65                        # minimum win rate to go live
+GO_LIVE_MIN_TRADES = 30                        # minimum settled trades
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -95,16 +98,61 @@ st.caption("Scan → Research → Predict → Risk → Postmortem")
 stats = summary()
 wr = stats["win_rate"]
 wr_delta = wr - 0.684
+current_bankroll = settings.bankroll_usdc + stats["total_pnl"]
+settled = stats["total_trades"] - stats["pending"]
 
 c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 
 c1.metric("Win Rate", f"{wr:.1%}", delta=f"{wr_delta:+.1%} vs target")
-c2.metric("Total PnL", f"${stats['total_pnl']:+,.2f}")
-c3.metric("Sharpe (ann.)", f"{stats['sharpe']:.2f}")
-c4.metric("Max Drawdown", f"{stats['max_drawdown']:.1%}")
-c5.metric("Total Trades", f"{stats['total_trades']}")
-c6.metric("Pending", f"{stats['pending']}")
+c2.metric("Bankroll", f"${current_bankroll:,.2f}", delta=f"{stats['total_pnl']:+,.2f}")
+c3.metric("Total PnL", f"${stats['total_pnl']:+,.2f}")
+c4.metric("Sharpe (ann.)", f"{stats['sharpe']:.2f}")
+c5.metric("Max Drawdown", f"{stats['max_drawdown']:.1%}")
+c6.metric("Settled / Open", f"{settled} / {stats['pending']}")
 c7.metric("Exposure", f"${stats['exposure_usdc']:,.2f}")
+
+# ── Go-live progress bar ──────────────────────────────────────────────────────
+
+dry = getattr(settings, "dry_run", True)
+if dry:
+    st.markdown("---")
+    st.markdown("### 🚀 Go-Live Checklist (Paper → Real Money)")
+
+    check1 = current_bankroll >= GO_LIVE_TARGET
+    check2 = wr >= GO_LIVE_WIN_RATE
+    check3 = settled >= GO_LIVE_MIN_TRADES
+
+    bar_pct = min(100, int((current_bankroll - settings.bankroll_usdc) / settings.bankroll_usdc * 100))
+    wr_pct  = min(100, int(wr / GO_LIVE_WIN_RATE * 100))
+    tr_pct  = min(100, int(settled / GO_LIVE_MIN_TRADES * 100))
+
+    gl1, gl2, gl3 = st.columns(3)
+
+    with gl1:
+        icon = "✅" if check1 else "⏳"
+        st.markdown(f"**{icon} Bankroll 2x** — ${current_bankroll:,.0f} / ${GO_LIVE_TARGET:,.0f}")
+        st.progress(bar_pct, text=f"{bar_pct}% of way to 2x")
+
+    with gl2:
+        icon = "✅" if check2 else "⏳"
+        st.markdown(f"**{icon} Win Rate ≥ 65%** — {wr:.1%}")
+        st.progress(wr_pct, text=f"{wr:.1%} / 65% target")
+
+    with gl3:
+        icon = "✅" if check3 else "⏳"
+        st.markdown(f"**{icon} 30+ Settled Trades** — {settled}")
+        st.progress(tr_pct, text=f"{settled} / {GO_LIVE_MIN_TRADES} trades")
+
+    if check1 and check2 and check3:
+        st.success("✅ All conditions met — you're ready to go live! Set `DRY_RUN=false` in your .env file.")
+    else:
+        remaining = []
+        if not check1: remaining.append(f"${GO_LIVE_TARGET - current_bankroll:,.0f} more PnL to 2x")
+        if not check2: remaining.append(f"win rate needs {GO_LIVE_WIN_RATE - wr:+.1%}")
+        if not check3: remaining.append(f"{GO_LIVE_MIN_TRADES - settled} more settled trades")
+        st.info("Still paper trading. Remaining: " + " · ".join(remaining))
+else:
+    st.success("🟢 **LIVE MODE** — Trading with real USDC on Polygon")
 
 st.divider()
 
@@ -136,6 +184,10 @@ with col_pnl:
                       line_color="rgba(255,255,255,0.3)",
                       annotation_text=f"Start ${settings.bankroll_usdc:,.0f}",
                       annotation_font_color="gray")
+        fig.add_hline(y=GO_LIVE_TARGET, line_dash="dot",
+                      line_color="#f1c40f",
+                      annotation_text=f"🚀 Go-live at ${GO_LIVE_TARGET:,.0f}",
+                      annotation_font_color="#f1c40f")
         fig.update_layout(
             height=240, margin=dict(l=0, r=0, t=4, b=0),
             yaxis_title="USDC", xaxis_title=None,
