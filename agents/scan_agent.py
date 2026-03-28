@@ -26,6 +26,10 @@ def _passes_base_filter(market: Market) -> bool:
         return False
     if market.time_to_resolution_days > settings.max_time_to_resolution_days:
         return False
+    # HARD RULE (from PatternAgent postmortem): never trade already-expired markets.
+    # time_to_resolution_days < 0 means the deadline has passed.
+    if market.time_to_resolution_days < 0:
+        return False
     if market.time_to_resolution_days < settings.min_time_to_resolution_days:
         return False
     # Skip markets that are already at near-certainty prices (>97% or <3%)
