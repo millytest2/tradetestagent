@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional
@@ -15,15 +16,21 @@ from core.models import SocialPost
 logger = logging.getLogger(__name__)
 
 # High-signal news feeds for prediction markets
+# Politico (403) and old MarketWatch (301) replaced with AP News + Guardian
 DEFAULT_FEEDS = [
     "https://feeds.reuters.com/reuters/topNews",
     "https://feeds.bbci.co.uk/news/rss.xml",
     "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
-    "https://www.politico.com/rss/politics08.xml",
+    "https://feeds.apnews.com/rss/apf-topnews",
+    "https://www.theguardian.com/world/rss",
     "https://feeds.feedburner.com/TheAtlanticWire",
     "https://www.espn.com/espn/rss/news",
-    "https://feeds.marketwatch.com/marketwatch/topstories",
+    "https://feeds.content.dowjones.io/public/rss/mw_topstories",
 ]
+
+# In-memory cache: url -> (fetched_at_epoch, entries)
+_FEED_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_CACHE_TTL = 300  # 5 minutes — RSS feeds don't update that fast
 
 
 def _parse_rss_date(date_str: Optional[str]) -> Optional[datetime]:
@@ -38,13 +45,20 @@ def _parse_rss_date(date_str: Optional[str]) -> Optional[datetime]:
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=5))
 async def _fetch_feed(url: str, client: httpx.AsyncClient) -> list[dict]:
-    """Fetch and parse a single RSS feed."""
+    """Fetch and parse a single RSS feed, with 5-minute in-memory cache."""
+    now = time.monotonic()
+    cached = _FEED_CACHE.get(url)
+    if cached and (now - cached[0]) < _CACHE_TTL:
+        return cached[1]
+
     try:
         import feedparser
         resp = await client.get(url, follow_redirects=True)
         resp.raise_for_status()
         feed = feedparser.parse(resp.text)
-        return feed.entries
+        entries = feed.entries
+        _FEED_CACHE[url] = (now, entries)
+        return entries
     except ImportError:
         logger.warning("feedparser not installed — using raw HTTP fallback")
         return []

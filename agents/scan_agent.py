@@ -75,22 +75,32 @@ def _priority_score(market: Market, flag_reason: str) -> float:
     distance_from_fair = abs(market.yes_price - 0.5)
     score += (0.5 - distance_from_fair) * 4.0   # 0–2 pts
 
-    # Anomaly signal
+    # Anomaly signal — fresh information = opportunity
     if flag_reason:
         score += 2.0
 
-    # Liquidity — more liquid = safer execution
+    # Liquidity — more liquid = safer execution, tighter slippage
     score += min(market.liquidity_usdc / 10_000, 2.0)
 
-    # Volume signal
-    score += min(market.volume_24h_usdc / 5_000, 1.0)
+    # Volume/liquidity ratio — high ratio = informed trading activity
+    if market.liquidity_usdc > 0:
+        vol_ratio = market.volume_24h_usdc / market.liquidity_usdc
+        score += min(vol_ratio * 0.5, 1.0)
+    else:
+        score += min(market.volume_24h_usdc / 5_000, 1.0)
 
-    # Prefer markets resolving sooner (but not too soon)
+    # Prefer markets resolving sooner (but not too soon) — faster feedback
     days = market.time_to_resolution_days
-    if 2 <= days <= 10:
+    if 1 <= days <= 3:
+        score += 2.0   # imminent — highest priority
+    elif 4 <= days <= 10:
         score += 1.5
     elif days <= 30:
         score += 0.5
+
+    # Penalise extreme prices — harder to find edge near certainty
+    if market.yes_price >= 0.88 or market.yes_price <= 0.12:
+        score -= 1.0
 
     return score
 

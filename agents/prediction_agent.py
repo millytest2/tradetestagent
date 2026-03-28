@@ -219,7 +219,19 @@ async def predict_market(
                 )
 
         except Exception as e:
-            logger.error("LLM prediction failed: %s — using XGBoost only", e)
+            logger.warning("LLM prediction failed: %s — falling back to rule-based", e)
+            # Fall back to rule-based prior (same as demo mode) rather than
+            # leaving confidence at 0.50 which would block all trades.
+            from ml.calibrator import _rule_based_probability
+            llm_prob = _rule_based_probability(features)
+            s = report.sentiment
+            confidence = min(0.72, 0.52 + abs(s.compound) * 0.35)
+            recommendation = (
+                "YES" if llm_prob > market.yes_price + settings.min_edge
+                else "NO" if (1 - llm_prob) > market.no_price + settings.min_edge
+                else "PASS"
+            )
+            reasoning = f"[API fallback] Rule-based prior: sentiment={s.compound:+.3f}, market={market.yes_price:.3f}."
 
     # ── Ensemble ──────────────────────────────────────────────────────────────
     # Weight XGBoost more heavily when it has training data
