@@ -120,7 +120,8 @@ async def evaluate_and_trade(
         win_prob = prediction.calibrated_yes_probability
     else:
         market_price = market.no_price
-        win_prob = 1.0 - prediction.calibrated_yes_probability
+        # calibrated_yes_probability is already flipped to P(NO wins) in prediction_agent
+        win_prob = prediction.calibrated_yes_probability
 
     # ── Bet sizing ────────────────────────────────────────────────────────────
     sizing = compute_bet_sizing(
