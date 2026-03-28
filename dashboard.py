@@ -12,17 +12,15 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 import streamlit as st
 
 from core.database import init_db, SessionLocal, TradeRow, PostmortemRow, LessonRow
 from core.analytics import (
     summary,
-    pnl_series,
     bankroll_series,
     win_rate_by_side,
     recent_trades,
@@ -32,221 +30,260 @@ from config import settings
 # ── Page config ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Prediction Market Bot",
+    page_title="TradeBot Dashboard",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
+# Custom CSS
+st.markdown("""
+<style>
+[data-testid="metric-container"] {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    padding: 12px;
+}
+.stDataFrame { border-radius: 8px; }
+.big-win { color: #2ecc71; font-weight: bold; }
+.big-loss { color: #e74c3c; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
 init_db()
-
-# ── Auto-refresh ──────────────────────────────────────────────────────────────
-
-REFRESH_INTERVAL = 5   # seconds
+REFRESH_INTERVAL = 5
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.title("⚙️ Config")
-    st.metric("Bankroll", f"${settings.bankroll_usdc:,.0f} USDC")
-    st.metric("Min confidence", f"{settings.min_confidence:.0%}")
-    st.metric("Min edge", f"{settings.min_edge:.0%}")
-    st.metric("Kelly fraction", f"{settings.kelly_fraction:.0%}")
-    st.metric("Max bet", f"{settings.max_bet_fraction:.0%} of bankroll")
+    st.markdown("### TradeBot")
+    st.caption(f"v1.0 · {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
+    st.divider()
+
+    st.markdown("**Trading Config**")
+    st.metric("Bankroll", f"${settings.bankroll_usdc:,.0f}")
+    col_a, col_b = st.columns(2)
+    col_a.metric("Min conf", f"{settings.min_confidence:.0%}")
+    col_b.metric("Min edge", f"{settings.min_edge:.0%}")
+    col_a.metric("Kelly", f"{settings.kelly_fraction:.0%}")
+    col_b.metric("Max bet", f"{settings.max_bet_fraction:.0%}")
 
     st.divider()
-    api_status = "🟢 Connected" if settings.anthropic_api_key else "🔴 No API key (demo mode)"
-    pm_status = "🟢 Live trading" if settings.polymarket_private_key else "🟡 Paper trading"
-    st.write(f"**LLM:** {api_status}")
-    st.write(f"**Polymarket:** {pm_status}")
+    st.markdown("**System Status**")
+
+    llm_ok = bool(settings.anthropic_api_key)
+    pm_ok = bool(settings.polymarket_private_key)
+    dry = getattr(settings, "dry_run", True)
+
+    st.write(f"{'🟢' if llm_ok else '🔴'} LLM: {'**' + settings.llm_model + '**' if llm_ok else 'No API key'}")
+    st.write(f"{'🟢' if pm_ok else '🔴'} Wallet: {'Connected' if pm_ok else 'Not set'}")
+    st.write(f"{'🟡' if dry else '🟢'} Mode: **{'Paper trading' if dry else 'LIVE'}**")
 
     st.divider()
-    st.caption(f"Last refresh: {datetime.utcnow().strftime('%H:%M:%S UTC')}")
-    if st.button("🔄 Refresh now"):
+    if st.button("🔄 Refresh now", use_container_width=True):
         st.rerun()
+    st.caption(f"Auto-refreshes every {REFRESH_INTERVAL}s")
 
-# ── Header ─────────────────────────────────────────────────────────────────────
+# ── Header ────────────────────────────────────────────────────────────────────
 
-st.title("📈 Prediction Market Trading Bot")
+st.markdown("## 📈 Prediction Market Trading Bot")
 st.caption("Scan → Research → Predict → Risk → Postmortem")
 
-# ── Stats row ─────────────────────────────────────────────────────────────────
+# ── KPI row ───────────────────────────────────────────────────────────────────
 
 stats = summary()
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-
 wr = stats["win_rate"]
 wr_delta = wr - 0.684
-c1.metric(
-    "Win Rate",
-    f"{wr:.1%}",
-    delta=f"{wr_delta:+.1%} vs 68.4% target",
-    delta_color="normal",
-)
-c2.metric(
-    "Total PnL",
-    f"${stats['total_pnl']:+,.2f}",
-    delta_color="normal",
-)
+
+c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+
+c1.metric("Win Rate", f"{wr:.1%}", delta=f"{wr_delta:+.1%} vs target")
+c2.metric("Total PnL", f"${stats['total_pnl']:+,.2f}")
 c3.metric("Sharpe (ann.)", f"{stats['sharpe']:.2f}")
 c4.metric("Max Drawdown", f"{stats['max_drawdown']:.1%}")
-c5.metric(
-    "Trades",
-    f"{stats['total_trades']}",
-    delta=f"{stats['pending']} open",
-    delta_color="off",
-)
-c6.metric("Open Exposure", f"${stats['exposure_usdc']:,.2f}")
+c5.metric("Total Trades", f"{stats['total_trades']}")
+c6.metric("Pending", f"{stats['pending']}")
+c7.metric("Exposure", f"${stats['exposure_usdc']:,.2f}")
 
 st.divider()
 
-# ── PnL Chart ─────────────────────────────────────────────────────────────────
+# ── Charts row ────────────────────────────────────────────────────────────────
 
-col_left, col_right = st.columns([2, 1])
+col_pnl, col_wr, col_dist = st.columns([3, 2, 2])
 
-with col_left:
-    st.subheader("📊 Cumulative PnL")
-
+with col_pnl:
+    st.markdown("#### Bankroll Curve")
     series = bankroll_series(initial=settings.bankroll_usdc)
     if series:
         dts = [dt for dt, _ in series]
         vals = [v for _, v in series]
-        color = "green" if vals[-1] >= settings.bankroll_usdc else "red"
+        last = vals[-1]
+        color = "#2ecc71" if last >= settings.bankroll_usdc else "#e74c3c"
+        fill_color = "rgba(46,204,113,0.12)" if last >= settings.bankroll_usdc else "rgba(231,76,60,0.12)"
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=dts, y=vals,
-            mode="lines+markers",
-            line=dict(color=color, width=2),
+            mode="lines",
+            line=dict(color=color, width=2.5),
             fill="tozeroy",
-            fillcolor=f"rgba({'0,200,100' if color == 'green' else '220,50,50'},0.08)",
+            fillcolor=fill_color,
             name="Bankroll",
+            hovertemplate="$%{y:,.2f}<extra></extra>",
         ))
-        fig.add_hline(
-            y=settings.bankroll_usdc, line_dash="dash",
-            line_color="gray", annotation_text="Starting bankroll",
-        )
+        fig.add_hline(y=settings.bankroll_usdc, line_dash="dash",
+                      line_color="rgba(255,255,255,0.3)",
+                      annotation_text=f"Start ${settings.bankroll_usdc:,.0f}",
+                      annotation_font_color="gray")
         fig.update_layout(
-            margin=dict(l=0, r=0, t=10, b=0),
-            height=300,
-            yaxis_title="USDC",
-            xaxis_title=None,
+            height=240, margin=dict(l=0, r=0, t=4, b=0),
+            yaxis_title="USDC", xaxis_title=None,
             showlegend=False,
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.07)"),
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No settled trades yet — run some paper trades to see the curve.")
+        st.info("No settled trades yet.")
 
-with col_right:
-    st.subheader("🎯 Win Rate by Side")
-
+with col_wr:
+    st.markdown("#### Win Rate by Side")
     wr_by_side = win_rate_by_side()
     if any(wr_by_side.values()):
+        sides = list(wr_by_side.keys())
+        rates = [v * 100 for v in wr_by_side.values()]
+        colors = ["#2ecc71" if r >= 68.4 else "#e67e22" for r in rates]
         fig2 = go.Figure(go.Bar(
-            x=list(wr_by_side.keys()),
-            y=[v * 100 for v in wr_by_side.values()],
-            marker_color=["#2ecc71", "#e74c3c"],
-            text=[f"{v:.1%}" for v in wr_by_side.values()],
+            x=sides, y=rates,
+            marker_color=colors,
+            text=[f"{r:.1f}%" for r in rates],
             textposition="outside",
         ))
-        fig2.add_hline(y=68.4, line_dash="dot", line_color="gold",
-                       annotation_text="68.4% target")
+        fig2.add_hline(y=68.4, line_dash="dot", line_color="#f1c40f",
+                       annotation_text="68.4% target", annotation_font_color="#f1c40f")
         fig2.update_layout(
-            height=300,
-            yaxis=dict(range=[0, 100], title="Win %"),
-            margin=dict(l=0, r=0, t=10, b=0),
-            plot_bgcolor="rgba(0,0,0,0)",
-            paper_bgcolor="rgba(0,0,0,0)",
+            height=240, margin=dict(l=0, r=0, t=4, b=0),
+            yaxis=dict(range=[0, 105], title="Win %", showgrid=True, gridcolor="rgba(255,255,255,0.07)"),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
         )
         st.plotly_chart(fig2, use_container_width=True)
     else:
         st.info("No settled trades yet.")
 
-# ── Trade table ────────────────────────────────────────────────────────────────
+with col_dist:
+    st.markdown("#### Trade Outcomes")
+    try:
+        with SessionLocal() as s:
+            all_trades = s.query(TradeRow).all()
+        wins = sum(1 for t in all_trades if t.outcome == "WIN")
+        losses = sum(1 for t in all_trades if t.outcome == "LOSS")
+        pending = sum(1 for t in all_trades if t.outcome == "PENDING")
+        if wins + losses + pending > 0:
+            fig3 = go.Figure(go.Pie(
+                labels=["Wins", "Losses", "Pending"],
+                values=[wins, losses, pending],
+                marker_colors=["#2ecc71", "#e74c3c", "#f39c12"],
+                hole=0.55,
+                textinfo="label+percent",
+                hovertemplate="%{label}: %{value}<extra></extra>",
+            ))
+            fig3.update_layout(
+                height=240, margin=dict(l=0, r=0, t=4, b=0),
+                showlegend=False,
+                plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+                annotations=[dict(text=f"{wins+losses+pending}", font_size=22, showarrow=False)],
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.info("No trades yet.")
+    except Exception as e:
+        st.error(str(e))
 
-st.subheader("📋 Recent Trades")
-
-trades = recent_trades(20)
-if trades:
-    df = pd.DataFrame(trades)
-    df["pnl"] = df["pnl"].map(lambda x: f"+${x:.2f}" if x > 0 else (f"-${abs(x):.2f}" if x < 0 else "—"))
-    df["entry"] = df["entry"].map(lambda x: f"{x:.3f}")
-    df["bet"] = df["bet"].map(lambda x: f"${x:.2f}")
-    df.columns = ["ID", "Market", "Side", "Entry", "Bet", "Outcome", "PnL", "Placed"]
-
-    def color_outcome(val):
-        if val == "WIN":
-            return "color: #2ecc71"
-        elif val == "LOSS":
-            return "color: #e74c3c"
-        elif val == "PENDING":
-            return "color: #f39c12"
-        return ""
-
-    st.dataframe(
-        df.style.map(color_outcome, subset=["Outcome"]),
-        use_container_width=True,
-        height=350,
-        hide_index=True,
-    )
-else:
-    st.info("No trades in the database yet. Run `python main.py --demo` to generate paper trades.")
-
-# ── Postmortem insights ────────────────────────────────────────────────────────
+# ── Trade table ───────────────────────────────────────────────────────────────
 
 st.divider()
-col_pm, col_lessons = st.columns(2)
+st.markdown("#### Recent Trades")
+
+trades = recent_trades(25)
+if trades:
+    df = pd.DataFrame(trades)
+
+    def fmt_pnl(x):
+        if x > 0:   return f"+${x:.2f}"
+        if x < 0:   return f"-${abs(x):.2f}"
+        return "—"
+
+    def fmt_outcome(val):
+        icons = {"WIN": "✅ WIN", "LOSS": "❌ LOSS", "PENDING": "⏳ Pending"}
+        return icons.get(val, val)
+
+    df["pnl"]     = df["pnl"].map(fmt_pnl)
+    df["outcome"] = df["outcome"].map(fmt_outcome)
+    df["entry"]   = df["entry"].map(lambda x: f"{x:.3f}")
+    df["bet"]     = df["bet"].map(lambda x: f"${x:.2f}")
+    df.columns    = ["ID", "Market", "Side", "Entry", "Bet", "Outcome", "PnL", "Placed"]
+
+    st.dataframe(df, use_container_width=True, height=380, hide_index=True)
+else:
+    st.info("No trades yet — run `python main.py --run-once` to start.")
+
+# ── Postmortems + Lessons ─────────────────────────────────────────────────────
+
+st.divider()
+col_pm, col_lessons = st.columns([3, 2])
 
 with col_pm:
-    st.subheader("🔬 Postmortem Findings")
+    st.markdown("#### Postmortem Findings")
     try:
         with SessionLocal() as s:
             rows = (
                 s.query(PostmortemRow)
                 .order_by(PostmortemRow.created_at.desc())
-                .limit(10)
+                .limit(15)
                 .all()
             )
         if rows:
+            sev_icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
             for r in rows:
-                severity_color = {
-                    "critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"
-                }.get(r.severity, "⚪")
-                with st.expander(f"{severity_color} [{r.agent_name}] Trade #{r.trade_id}"):
-                    st.write(f"**Finding:** {r.finding}")
-                    st.write(f"**Root cause:** {r.root_cause}")
-                    st.write(f"**Fix:** {r.recommendation}")
+                icon = sev_icon.get(r.severity, "⚪")
+                label = f"{icon} Trade #{r.trade_id} · {r.agent_name}"
+                with st.expander(label, expanded=(r.severity in ("critical", "high"))):
+                    st.markdown(f"**Finding:** {r.finding}")
+                    if r.root_cause:
+                        st.markdown(f"**Root cause:** {r.root_cause}")
+                    if r.recommendation:
+                        st.markdown(f"**Fix:** {r.recommendation}")
+                    st.caption(f"Severity: {r.severity}")
         else:
-            st.info("No postmortems yet — losses trigger automatic analysis.")
+            st.info("No postmortems yet — they run automatically after each loss.")
     except Exception as e:
-        st.error(f"Error loading postmortems: {e}")
+        st.error(str(e))
 
 with col_lessons:
-    st.subheader("💡 System Lessons")
+    st.markdown("#### System Lessons Learned")
     try:
         with SessionLocal() as s:
             lessons = (
                 s.query(LessonRow)
                 .filter(LessonRow.active == True)
                 .order_by(LessonRow.created_at.desc())
-                .limit(15)
+                .limit(20)
                 .all()
             )
         if lessons:
             for l in lessons:
                 st.markdown(f"- **[{l.category}]** {l.lesson}")
         else:
-            st.info("Lessons accumulate as postmortems run after losses.")
+            st.info("Lessons build up as postmortems analyze losses.")
     except Exception as e:
-        st.error(f"Error loading lessons: {e}")
+        st.error(str(e))
 
-# ── Market scan preview ────────────────────────────────────────────────────────
+# ── Recent bot activity ───────────────────────────────────────────────────────
 
 st.divider()
-st.subheader("🔭 Market Scanner — Last Cycle")
-
+st.markdown("#### Last 5 Trades Placed")
 try:
     with SessionLocal() as s:
         recent = (
@@ -256,17 +293,17 @@ try:
             .all()
         )
     if recent:
-        scan_data = []
-        for r in recent:
-            scan_data.append({
-                "Market": (r.question or "")[:65],
-                "Side": r.side,
-                "Entry price": f"{r.entry_price:.3f}",
-                "Bet USDC": f"${r.bet_usdc:.2f}",
-                "Status": r.outcome,
-                "Tx": r.tx_hash[:16] + "…" if r.tx_hash and len(r.tx_hash) > 16 else r.tx_hash,
-            })
+        scan_data = [{
+            "Market": (r.question or "")[:70],
+            "Side": r.side,
+            "Entry": f"{r.entry_price:.3f}",
+            "Bet": f"${r.bet_usdc:.2f}",
+            "Status": r.outcome,
+            "TX": (r.tx_hash[:20] + "…") if r.tx_hash and len(r.tx_hash) > 20 else (r.tx_hash or "—"),
+        } for r in recent]
         st.dataframe(pd.DataFrame(scan_data), use_container_width=True, hide_index=True)
+    else:
+        st.info("No trades placed yet.")
 except Exception as e:
     st.error(str(e))
 
