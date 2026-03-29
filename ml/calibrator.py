@@ -226,13 +226,20 @@ class ProbabilityCalibrator:
 
     def collect_training_data(self) -> list[dict]:
         """
-        Build training records from the trade history + postmortem DB.
-        Only includes trades with WIN or LOSS outcomes.
+        Build training records from the trade history.
+        Only includes trades with WIN or LOSS outcomes AND at least 3 non-zero
+        market features — records with all-zero features teach the model nothing
+        and will cause it to predict the training mean for every market.
         """
         from core.database import get_session, TradeRow, SessionLocal
-        from sqlalchemy import text
+
+        MARKET_FEATURE_COLS = [
+            "price_change_24h", "spread", "liquidity_usdc",
+            "volume_24h_usdc", "time_to_resolution_days", "current_yes_price",
+        ]
 
         records = []
+        skipped = 0
         try:
             with SessionLocal() as session:
                 rows = (
@@ -241,22 +248,36 @@ class ProbabilityCalibrator:
                     .all()
                 )
                 for row in rows:
-                    # We store features as part of the notes JSON if available
                     import json
                     try:
                         notes = json.loads(row.notes or "{}")
                         feats = notes.get("features") or {}
-                        # Fill any missing feature columns with 0 so old trades
-                        # (saved before full feature logging) can still be used.
+                        # Fill any missing columns with 0
                         for col in FEATURE_COLS:
                             if col not in feats:
                                 feats[col] = 0.0
+                        # Reject records where all market-level features are 0
+                        # (old format — only current_yes_price was saved)
+                        nonzero = sum(
+                            1 for col in MARKET_FEATURE_COLS
+                            if float(feats.get(col, 0)) != 0.0
+                        )
+                        if nonzero < 3:
+                            skipped += 1
+                            continue
                         feats["label"] = 1 if row.outcome == "WIN" else 0
                         records.append(feats)
                     except Exception:
                         continue
         except Exception as e:
             logger.error("Failed to collect training data: %s", e)
+
+        if skipped:
+            logger.info(
+                "Skipped %d low-quality records (all-zero features) — "
+                "retrain after more trades accumulate with full feature logging",
+                skipped,
+            )
         return records
 
 

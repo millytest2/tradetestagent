@@ -210,20 +210,17 @@ async def predict_market(
         )
     else:
         try:
-            with _client.messages.stream(
+            response = _client.messages.create(
                 model=settings.llm_model,
-                max_tokens=1024,
-                thinking={"type": "adaptive"},
+                max_tokens=512,
                 messages=[{"role": "user", "content": prompt}],
-            ) as stream:
-                response = stream.get_final_message()
+            )
 
             text_content = next(
                 (b.text for b in response.content if b.type == "text"), ""
             )
             if not text_content:
-                # Claude returned a thinking-only block with no text — treat as failure
-                raise ValueError("LLM returned no text block (thinking-only response)")
+                raise ValueError("LLM returned no text block")
             parsed = _parse_llm_response(text_content)
 
             if parsed:
