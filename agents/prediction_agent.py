@@ -27,7 +27,10 @@ from ml.calibrator import calibrator
 
 logger = logging.getLogger(__name__)
 
-_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+_client = anthropic.Anthropic(
+    api_key=settings.anthropic_api_key,
+    timeout=60.0,   # hard 60-second cap per LLM call — prevents 30-min hangs
+)
 
 
 # ── Feature extraction ────────────────────────────────────────────────────────
@@ -218,6 +221,9 @@ async def predict_market(
             text_content = next(
                 (b.text for b in response.content if b.type == "text"), ""
             )
+            if not text_content:
+                # Claude returned a thinking-only block with no text — treat as failure
+                raise ValueError("LLM returned no text block (thinking-only response)")
             parsed = _parse_llm_response(text_content)
 
             if parsed:

@@ -171,6 +171,14 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             console.print(f"    [dim]↳ No trade signal[/dim]")
             continue
 
+        # Attach sentiment features so risk_agent can save them for ML retraining
+        s = report.sentiment
+        prediction._sentiment_compound = s.compound
+        prediction._sentiment_positive = s.positive
+        prediction._sentiment_negative = s.negative
+        prediction._post_count = s.post_count
+        prediction._avg_engagement = s.avg_engagement
+
         console.print(
             f"    [cyan]Signal:[/cyan] {prediction.side.value} "
             f"| calibrated={prediction.calibrated_yes_probability:.3f} "

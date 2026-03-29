@@ -166,13 +166,22 @@ async def evaluate_and_trade(
         )
         trade.question = market.question
 
-        # Persist to DB with feature snapshot for later ML training
+        # Persist to DB with feature snapshot for later ML training.
+        # Sentiment fields default to 0.0 here; main.py may pass them via
+        # extra_features to get the full picture.
         import json
         features_snapshot = {
-            "compound_sentiment": 0.0,   # filled in by orchestrator
-            "current_yes_price": market.yes_price,
-            "edge": prediction.edge,
-            "confidence": prediction.confidence,
+            "compound_sentiment":   getattr(prediction, "_sentiment_compound", 0.0),
+            "positive_sentiment":   getattr(prediction, "_sentiment_positive", 0.0),
+            "negative_sentiment":   getattr(prediction, "_sentiment_negative", 0.0),
+            "post_count":           getattr(prediction, "_post_count", 0),
+            "avg_engagement":       getattr(prediction, "_avg_engagement", 0.0),
+            "price_change_24h":     market.price_change_24h,
+            "spread":               market.spread,
+            "liquidity_usdc":       market.liquidity_usdc,
+            "volume_24h_usdc":      market.volume_24h_usdc,
+            "time_to_resolution_days": market.time_to_resolution_days,
+            "current_yes_price":    market.yes_price,
         }
         trade.notes = json.dumps({"features": features_snapshot})
 

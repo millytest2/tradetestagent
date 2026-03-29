@@ -245,10 +245,14 @@ class ProbabilityCalibrator:
                     import json
                     try:
                         notes = json.loads(row.notes or "{}")
-                        feats = notes.get("features")
-                        if feats:
-                            feats["label"] = 1 if row.outcome == "WIN" else 0
-                            records.append(feats)
+                        feats = notes.get("features") or {}
+                        # Fill any missing feature columns with 0 so old trades
+                        # (saved before full feature logging) can still be used.
+                        for col in FEATURE_COLS:
+                            if col not in feats:
+                                feats[col] = 0.0
+                        feats["label"] = 1 if row.outcome == "WIN" else 0
+                        records.append(feats)
                     except Exception:
                         continue
         except Exception as e:
