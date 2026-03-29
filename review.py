@@ -81,12 +81,13 @@ def _sharpe(rows: list[TradeRow]) -> float:
 def _max_dd(rows: list[TradeRow]) -> float:
     if not rows:
         return 0.0
-    cumulative, peak, max_dd = 0.0, 0.0, 0.0
+    denominator = max(settings.bankroll_usdc, 1.0)
+    cumulative, peak_pnl, max_dd = 0.0, 0.0, 0.0
     for r in rows:
         cumulative += r.pnl_usdc
-        if cumulative > peak:
-            peak = cumulative
-        dd = (peak - cumulative) / max(abs(peak), 1e-6) if peak > 0 else 0.0
+        if cumulative > peak_pnl:
+            peak_pnl = cumulative
+        dd = (peak_pnl - cumulative) / denominator
         if dd > max_dd:
             max_dd = dd
     return max_dd

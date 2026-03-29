@@ -210,6 +210,28 @@ def get_active_lessons(category: Optional[str] = None, limit: int = 20) -> list[
         return [r.lesson for r in rows]
 
 
+def purge_stale_lessons() -> int:
+    """
+    Deactivate generic placeholder lessons written when the JSON parser
+    was broken (before the Sonnet JSON fix).  Safe to run repeatedly.
+    """
+    stale_phrases = [
+        "Review process",
+        "Investigate agent failure",
+        "review process",
+        "investigate agent failure",
+    ]
+    count = 0
+    with get_session() as session:
+        rows = session.query(LessonRow).filter(LessonRow.active == True).all()
+        for row in rows:
+            if any(phrase in (row.lesson or "") for phrase in stale_phrases):
+                row.active = False
+                count += 1
+        session.commit()
+    return count
+
+
 def save_system_update(update_type: str, description: str, payload: dict) -> None:
     with get_session() as session:
         row = SystemUpdateRow(

@@ -63,16 +63,19 @@ def sharpe_ratio(risk_free: float = 0.0) -> float:
 
 
 def max_drawdown() -> float:
-    """Maximum peak-to-trough drawdown as a positive fraction."""
+    """Maximum peak-to-trough drawdown as a fraction of initial bankroll."""
     series = [pnl for _, pnl in pnl_series()]
     if not series:
         return 0.0
-    peak = series[0]
+    # Anchor denominator to initial bankroll — avoids divide-by-near-zero
+    # when peak PnL is tiny (which caused 1000%+ readings).
+    denominator = max(settings.bankroll_usdc, 1.0)
+    peak_pnl = 0.0   # start at 0: no gain yet at trade 0
     max_dd = 0.0
-    for val in series:
-        if val > peak:
-            peak = val
-        dd = (peak - val) / max(abs(peak), 1e-6)
+    for pnl in series:
+        if pnl > peak_pnl:
+            peak_pnl = pnl
+        dd = (peak_pnl - pnl) / denominator
         if dd > max_dd:
             max_dd = dd
     return max_dd

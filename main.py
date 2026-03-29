@@ -45,6 +45,7 @@ from core.database import (
     get_losing_trades,
     get_trade_stats,
     init_db,
+    purge_stale_lessons,
 )
 from agents.scan_agent import scan_markets
 from agents.research_agent import research_markets_parallel
@@ -354,6 +355,10 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     init_db()
+
+    purged = purge_stale_lessons()
+    if purged:
+        logger.info("Purged %d stale placeholder lessons from DB", purged)
 
     if args.stats:
         _print_banner()
