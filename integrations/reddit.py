@@ -1,12 +1,14 @@
-"""Reddit scraper using PRAW."""
+"""Reddit scraper using public JSON API — no credentials required."""
 
 from __future__ import annotations
 
 import logging
+import asyncio
 from datetime import datetime, timezone
 from typing import Optional
 
-from config import settings
+import httpx
+
 from core.models import SocialPost
 
 logger = logging.getLogger(__name__)
@@ -29,24 +31,11 @@ RELEVANT_SUBREDDITS = [
     "boxoffice",
 ]
 
-
-def _get_reddit_client():
-    """Return a PRAW Reddit client or None if creds are missing."""
-    if not settings.reddit_client_id or not settings.reddit_client_secret:
-        return None
-    try:
-        import praw
-        return praw.Reddit(
-            client_id=settings.reddit_client_id,
-            client_secret=settings.reddit_client_secret,
-            user_agent=settings.reddit_user_agent,
-        )
-    except ImportError:
-        logger.warning("praw not installed — skipping Reddit")
-        return None
-    except Exception as e:
-        logger.error("Reddit client init failed: %s", e)
-        return None
+# Reddit rate-limits by User-Agent — use something descriptive
+_HEADERS = {
+    "User-Agent": "prediction-market-bot/1.0 (research tool)",
+    "Accept": "application/json",
+}
 
 
 def _extract_search_terms(question: str) -> str:
@@ -63,46 +52,65 @@ async def search_reddit(
     max_posts: int = 20,
     subreddits: Optional[list[str]] = None,
 ) -> list[SocialPost]:
-    """Search Reddit for posts relevant to a market question."""
+    """Search Reddit for posts relevant to a market question.
 
-    reddit = _get_reddit_client()
-    if reddit is None:
+    Uses Reddit's public JSON search endpoint — no API key or app needed.
+    """
+    search_query = _extract_search_terms(question)
+    if not search_query:
         return []
 
-    search_query = _extract_search_terms(question)
     target_subs = subreddits or RELEVANT_SUBREDDITS[:5]
     subreddit_str = "+".join(target_subs)
 
+    url = f"https://www.reddit.com/r/{subreddit_str}/search.json"
+    params = {
+        "q": search_query,
+        "sort": "relevance",
+        "t": "week",
+        "limit": max_posts,
+        "restrict_sr": "1",
+    }
+
     posts: list[SocialPost] = []
     try:
-        subreddit = reddit.subreddit(subreddit_str)
-        results = list(subreddit.search(
-            query=search_query,
-            sort="relevance",
-            time_filter="week",
-            limit=max_posts,
-        ))
+        async with httpx.AsyncClient(headers=_HEADERS, timeout=15.0) as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code == 429:
+                logger.warning("Reddit rate-limited — backing off 10s")
+                await asyncio.sleep(10)
+                resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
 
-        for submission in results:
+        children = data.get("data", {}).get("children", [])
+        for item in children:
+            d = item.get("data", {})
             try:
-                created = datetime.fromtimestamp(submission.created_utc, tz=timezone.utc)
-                # Combine title + selftext for richer content
-                text = f"{submission.title}. {submission.selftext[:500]}".strip(". ")
+                created = datetime.fromtimestamp(
+                    float(d.get("created_utc", 0)), tz=timezone.utc
+                )
+                title = d.get("title", "")
+                body = d.get("selftext", "")[:500]
+                text = f"{title}. {body}".strip(". ") if body else title
+                permalink = d.get("permalink", "")
 
                 posts.append(SocialPost(
                     source="reddit",
-                    author=str(submission.author) if submission.author else "[deleted]",
+                    author=d.get("author", "[deleted]"),
                     text=text,
-                    url=f"https://reddit.com{submission.permalink}",
+                    url=f"https://reddit.com{permalink}",
                     published_at=created,
-                    score=submission.score,
+                    score=int(d.get("score", 0)),
                 ))
             except Exception:
                 continue
 
         logger.info("Reddit: found %d posts for '%s'", len(posts), question[:60])
-        return posts
 
+    except httpx.HTTPStatusError as e:
+        logger.error("Reddit HTTP error %s: %s", e.response.status_code, e)
     except Exception as e:
         logger.error("Reddit search failed: %s", e)
-        return []
+
+    return posts
