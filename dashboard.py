@@ -55,7 +55,8 @@ init_db()
 REFRESH_INTERVAL = 5
 GO_LIVE_TARGET = settings.bankroll_usdc * 2   # 2x = go live milestone
 GO_LIVE_WIN_RATE = 0.65                        # minimum win rate to go live
-GO_LIVE_MIN_TRADES = 30                        # minimum settled trades
+GO_LIVE_MIN_TRADES = 200                       # paper trades before going live
+PAPER_TRADE_TARGET = 200                       # total placed trades milestone
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
@@ -111,12 +112,38 @@ c5.metric("Max Drawdown", f"{stats['max_drawdown']:.1%}")
 c6.metric("Settled / Open", f"{settled} / {stats['pending']}")
 c7.metric("Exposure", f"${stats['exposure_usdc']:,.2f}")
 
-# ── Go-live progress bar ──────────────────────────────────────────────────────
+# ── Phase 1: 200-trade paper milestone ───────────────────────────────────────
 
 dry = getattr(settings, "dry_run", True)
+st.markdown("---")
+
+total_placed = stats["total_trades"]
+phase1_done = total_placed >= PAPER_TRADE_TARGET
+
 if dry:
+    # ── Phase 1 banner ────────────────────────────────────────────────────────
+    phase1_pct = min(100, int(total_placed / PAPER_TRADE_TARGET * 100))
+    phase1_icon = "✅" if phase1_done else "🔬"
+    st.markdown(f"### {phase1_icon} Phase 1 — Paper Trading ({total_placed} / {PAPER_TRADE_TARGET} trades)")
+
+    phase1_col, phase1_detail = st.columns([3, 1])
+    with phase1_col:
+        st.progress(phase1_pct, text=f"{total_placed} trades placed — {PAPER_TRADE_TARGET - total_placed} to go" if not phase1_done else "✅ 200 trades complete — run `python review.py` for deep analysis")
+    with phase1_detail:
+        if phase1_done:
+            st.success("Run `python review.py`")
+        else:
+            trades_per_day_est = 6   # ~3 per cycle, 2 cycles/hr, some gaps
+            days_left = max(0, (PAPER_TRADE_TARGET - total_placed) // trades_per_day_est)
+            st.caption(f"~{days_left}d left at current rate")
+
+    if phase1_done:
+        st.info("📊 Phase 1 complete! Run `python review.py` to analyse what's working, then double down before going live.")
+
     st.markdown("---")
-    st.markdown("### 🚀 Go-Live Checklist (Paper → Real Money)")
+
+    # ── Phase 2: Go-live checklist ────────────────────────────────────────────
+    st.markdown("### 🚀 Phase 2 — Go-Live Checklist")
 
     check1 = current_bankroll >= GO_LIVE_TARGET
     check2 = wr >= GO_LIVE_WIN_RATE
@@ -140,7 +167,7 @@ if dry:
 
     with gl3:
         icon = "✅" if check3 else "⏳"
-        st.markdown(f"**{icon} 30+ Settled Trades** — {settled}")
+        st.markdown(f"**{icon} 200 Settled Trades** — {settled}")
         st.progress(tr_pct, text=f"{settled} / {GO_LIVE_MIN_TRADES} trades")
 
     if check1 and check2 and check3:
@@ -150,7 +177,7 @@ if dry:
         if not check1: remaining.append(f"${GO_LIVE_TARGET - current_bankroll:,.0f} more PnL to 2x")
         if not check2: remaining.append(f"win rate needs {GO_LIVE_WIN_RATE - wr:+.1%}")
         if not check3: remaining.append(f"{GO_LIVE_MIN_TRADES - settled} more settled trades")
-        st.info("Still paper trading. Remaining: " + " · ".join(remaining))
+        st.info("Keep paper trading. Remaining: " + " · ".join(remaining))
 else:
     st.success("🟢 **LIVE MODE** — Trading with real USDC on Polygon")
 
