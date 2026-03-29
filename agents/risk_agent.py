@@ -114,6 +114,29 @@ async def evaluate_and_trade(
     bankroll = bankroll_usdc or settings.bankroll_usdc
     market = flagged.market
 
+    # Skip if we already have an open position on this market
+    from core.database import SessionLocal, TradeRow
+    with SessionLocal() as _s:
+        existing = (
+            _s.query(TradeRow)
+            .filter(
+                TradeRow.market_id == market.condition_id,
+                TradeRow.outcome == "PENDING",
+            )
+            .first()
+        )
+    if existing:
+        return TradeDecision(
+            approved=False,
+            rejection_reason=f"Already have open position on this market (trade #{existing.id})",
+            prediction=prediction,
+            sizing=compute_bet_sizing(
+                win_prob=prediction.calibrated_yes_probability,
+                market_price=market.yes_price,
+                bankroll_usdc=bankroll,
+            ),
+        )
+
     # Determine which price we're trading against
     if prediction.side == MarketSide.YES:
         market_price = market.yes_price
