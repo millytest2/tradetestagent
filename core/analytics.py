@@ -6,6 +6,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Optional
 
+from config import settings
 from core.database import SessionLocal, TradeRow
 
 
