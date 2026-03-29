@@ -332,6 +332,14 @@ def parse_args() -> argparse.Namespace:
         "--demo", action="store_true",
         help="Demo mode: run full pipeline with rule-based predictions (no API key needed)",
     )
+    p.add_argument(
+        "--cycles", type=int, default=1,
+        help="Number of back-to-back pipeline cycles to run (paper trading only)",
+    )
+    p.add_argument(
+        "--paper-blast", action="store_true",
+        help="Relaxed thresholds for fast paper trade accumulation (min_confidence=0.60, top-n=20)",
+    )
     return p.parse_args()
 
 
@@ -367,9 +375,28 @@ if __name__ == "__main__":
         # Lower confidence threshold for demo so we can see trade signals fire
         settings.min_confidence = 0.51
 
-    if args.run_once or args.demo:
+    if args.paper_blast:
+        if args.live:
+            console.print("[red]--paper-blast cannot be used with --live[/red]")
+            sys.exit(1)
+        settings.min_confidence = 0.60
+        settings.min_edge = 0.03
+        args.top_n = max(args.top_n, 20)
+        console.print(Panel(
+            "[bold yellow]📄 Paper Blast Mode[/bold yellow]\n"
+            "Relaxed thresholds for fast paper trade accumulation.\n"
+            f"min_confidence=0.60  min_edge=0.03  top_n={args.top_n}\n"
+            "[dim]These settings are paper-only and reset on next run.[/dim]",
+            border_style="yellow",
+        ))
+
+    if args.run_once or args.demo or args.cycles > 1 or args.paper_blast:
         _print_banner()
-        asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n, use_mock=use_mock))
+        cycles = args.cycles if not args.run_once else 1
+        for i in range(cycles):
+            if cycles > 1:
+                console.rule(f"[cyan]Cycle {i+1} / {cycles}[/cyan]")
+            asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n, use_mock=use_mock))
         _print_stats()
     else:
         asyncio.run(main_loop(dry_run=dry_run, interval_seconds=args.interval))
