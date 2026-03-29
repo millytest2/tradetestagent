@@ -297,6 +297,41 @@ with col_dist:
     except Exception as e:
         st.error(str(e))
 
+# ── Pending Trades panel ──────────────────────────────────────────────────────
+
+st.divider()
+st.markdown("#### ⏳ Open / Pending Trades")
+
+try:
+    with SessionLocal() as _s:
+        _pending = (
+            _s.query(TradeRow)
+            .filter(TradeRow.outcome == "PENDING")
+            .order_by(TradeRow.placed_at.desc())
+            .all()
+        )
+    if _pending:
+        _rows = []
+        for t in _pending:
+            _rows.append({
+                "ID": t.id,
+                "Market": (t.question or "")[:65],
+                "Side": t.side,
+                "Entry": f"{t.entry_price:.3f}",
+                "Bet": f"${t.bet_usdc:.2f}",
+                "Placed": str(t.placed_at)[:16] if t.placed_at else "—",
+            })
+        _pdf = pd.DataFrame(_rows)
+        st.dataframe(_pdf, use_container_width=True, hide_index=True)
+        st.caption(
+            f"{len(_pending)} open position(s) awaiting settlement. "
+            "Run `python paper_trader.py --now` to settle resolved markets."
+        )
+    else:
+        st.success("No open positions — all trades settled.")
+except Exception as _e:
+    st.error(str(_e))
+
 # ── Trade table ───────────────────────────────────────────────────────────────
 
 st.divider()
