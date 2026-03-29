@@ -133,9 +133,26 @@ if dry:
         if phase1_done:
             st.success("Run `python review.py`")
         else:
-            trades_per_day_est = 6   # ~3 per cycle, 2 cycles/hr, some gaps
-            days_left = max(0, (PAPER_TRADE_TARGET - total_placed) // trades_per_day_est)
-            st.caption(f"~{days_left}d left at current rate")
+            # Calculate actual trades/day from first and last trade timestamps
+            try:
+                with SessionLocal() as s:
+                    from sqlalchemy import func
+                    first = s.query(func.min(TradeRow.placed_at)).scalar()
+                    last  = s.query(func.max(TradeRow.placed_at)).scalar()
+                if first and last and first != last:
+                    elapsed_days = max((last - first).total_seconds() / 86400, 0.01)
+                    trades_per_day = total_placed / elapsed_days
+                else:
+                    trades_per_day = 6.0
+            except Exception:
+                trades_per_day = 6.0
+            remaining = PAPER_TRADE_TARGET - total_placed
+            days_left = max(0, remaining / max(trades_per_day, 1))
+            if days_left < 1:
+                eta = f"~{int(days_left * 24)}h left"
+            else:
+                eta = f"~{days_left:.1f}d left"
+            st.caption(f"{eta} · {trades_per_day:.0f}/day")
 
     if phase1_done:
         st.info("📊 Phase 1 complete! Run `python review.py` to analyse what's working, then double down before going live.")
