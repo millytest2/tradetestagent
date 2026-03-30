@@ -112,6 +112,21 @@ c5.metric("Max Drawdown", f"{stats['max_drawdown']:.1%}")
 c6.metric("Settled / Open", f"{settled} / {stats['pending']}")
 c7.metric("Exposure", f"${stats['exposure_usdc']:,.2f}")
 
+# ── Circuit breaker alert ─────────────────────────────────────────────────────
+
+import os as _os
+_CB_FILE = "TRADING_PAUSED.txt"
+if _os.path.exists(_CB_FILE):
+    with open(_CB_FILE) as _f:
+        _cb_msg = _f.read().strip()
+    st.error(
+        f"🚨 **CIRCUIT BREAKER ACTIVE — ALL TRADING PAUSED**\n\n"
+        f"{_cb_msg}\n\n"
+        f"To resume: investigate the recent losses, then delete `{_CB_FILE}`."
+    )
+else:
+    st.success("✅ Circuit breaker: OK — trading active")
+
 # ── Phase 1: 200-trade paper milestone ───────────────────────────────────────
 
 dry = getattr(settings, "dry_run", True)

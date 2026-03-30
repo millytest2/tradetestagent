@@ -40,6 +40,58 @@ logger = logging.getLogger(__name__)
 
 # ── Dynamic Kelly ─────────────────────────────────────────────────────────────
 
+CIRCUIT_BREAKER_FILE = "TRADING_PAUSED.txt"
+CIRCUIT_BREAKER_WINDOW = 30     # look at last N settled trades
+CIRCUIT_BREAKER_THRESHOLD = 0.52  # pause if win rate drops below this
+
+
+def _check_rolling_circuit_breaker() -> None:
+    """
+    Examine the last 30 settled trades. If win rate < 52%, write a pause
+    file and raise an exception that blocks all further trades.
+
+    To resume trading manually: delete TRADING_PAUSED.txt
+    """
+    # If already paused, keep blocking
+    import os
+    if os.path.exists(CIRCUIT_BREAKER_FILE):
+        with open(CIRCUIT_BREAKER_FILE) as f:
+            msg = f.read().strip()
+        raise RuntimeError(f"TRADING PAUSED — {msg}. Delete {CIRCUIT_BREAKER_FILE} to resume.")
+
+    try:
+        from core.database import SessionLocal, TradeRow
+        with SessionLocal() as session:
+            recent = (
+                session.query(TradeRow)
+                .filter(TradeRow.outcome.in_(["WIN", "LOSS"]))
+                .order_by(TradeRow.settled_at.desc())
+                .limit(CIRCUIT_BREAKER_WINDOW)
+                .all()
+            )
+        if len(recent) < CIRCUIT_BREAKER_WINDOW:
+            return   # not enough data yet
+
+        wins = sum(1 for t in recent if t.outcome == "WIN")
+        rate = wins / len(recent)
+
+        if rate < CIRCUIT_BREAKER_THRESHOLD:
+            msg = (
+                f"Win rate {rate:.1%} on last {CIRCUIT_BREAKER_WINDOW} trades "
+                f"fell below {CIRCUIT_BREAKER_THRESHOLD:.0%} threshold. "
+                f"Strategy may be breaking down. Review before resuming."
+            )
+            with open(CIRCUIT_BREAKER_FILE, "w") as f:
+                f.write(msg)
+            logger.critical("CIRCUIT BREAKER TRIGGERED: %s", msg)
+            raise RuntimeError(f"TRADING PAUSED — {msg}")
+
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.warning("Circuit breaker check failed (non-blocking): %s", e)
+
+
 def _dynamic_kelly_multiplier() -> float:
     """
     Scale bet size based on recent performance over the last 15 settled trades.
@@ -130,6 +182,9 @@ def _check_risk(
             f"Recent win rate {stats['win_rate']:.1%} is very low — "
             "circuit breaker triggered"
         )
+
+    # 8. Rolling 30-trade circuit breaker — pause if strategy is breaking down
+    _check_rolling_circuit_breaker()
 
     return True, ""
 
