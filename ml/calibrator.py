@@ -48,6 +48,8 @@ FEATURE_COLS = [
     "volume_24h_usdc",
     "time_to_resolution_days",
     "current_yes_price",
+    "whale_bid_imbalance",   # on-chain whale order pressure
+    "trend_score",           # Google Trends interest score
 ]
 
 MIN_SAMPLES_FOR_TRAINING = 30
@@ -141,6 +143,8 @@ class ProbabilityCalibrator:
             "volume_24h_usdc": features.volume_24h_usdc,
             "time_to_resolution_days": features.time_to_resolution_days,
             "current_yes_price": features.current_yes_price,
+            "whale_bid_imbalance": features.whale_bid_imbalance,
+            "trend_score": features.trend_score,
         }
         return pd.DataFrame([row])[FEATURE_COLS].values
 
@@ -164,10 +168,27 @@ class ProbabilityCalibrator:
             from sklearn.model_selection import cross_val_score
             from sklearn.preprocessing import StandardScaler
             from sklearn.pipeline import Pipeline
+            from datetime import datetime, timezone
 
             df = pd.DataFrame(records)
             X = df[FEATURE_COLS].values
             y = df["label"].values.astype(int)
+
+            # ── Recency weighting: exponential decay over 90 days ────────────
+            # Trades settled recently matter more than old ones.
+            # Half-life ≈ 30 days (weight halves every 30 days back in time).
+            now_ts = datetime.now(timezone.utc).timestamp()
+            HALF_LIFE_DAYS = 30.0
+            decay_rate = np.log(2) / (HALF_LIFE_DAYS * 86400)
+            settled_ts = pd.to_numeric(
+                pd.to_datetime(df.get("settled_at", pd.Series(dtype=str)), utc=True, errors="coerce"),
+                errors="coerce",
+            ) / 1e9   # ns → s
+            settled_ts = settled_ts.fillna(now_ts)
+            age_seconds = np.maximum(0, now_ts - settled_ts.values)
+            sample_weights = np.exp(-decay_rate * age_seconds).astype(float)
+            sample_weights /= sample_weights.mean()   # normalise to mean=1
+            # ─────────────────────────────────────────────────────────────────
 
             base = XGBClassifier(
                 n_estimators=200,
@@ -187,9 +208,10 @@ class ProbabilityCalibrator:
                 ("clf", CalibratedClassifierCV(base, cv=3, method="isotonic")),
             ])
 
-            # Cross-validate
+            # Cross-validate (unweighted — gives honest generalisation estimate)
             scores = cross_val_score(pipeline, X, y, cv=5, scoring="roc_auc")
-            pipeline.fit(X, y)
+            # Fit with recency weights so recent trades drive the model more
+            pipeline.fit(X, y, clf__sample_weight=sample_weights)
 
             self._model = pipeline
             self._is_trained = True

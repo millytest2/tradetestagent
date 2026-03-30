@@ -38,6 +38,49 @@ from utils.kelly import compute_bet_sizing
 logger = logging.getLogger(__name__)
 
 
+# ── Dynamic Kelly ─────────────────────────────────────────────────────────────
+
+def _dynamic_kelly_multiplier() -> float:
+    """
+    Scale bet size based on recent performance over the last 15 settled trades.
+
+      ≥ 70% win rate → 1.25x  (hot streak — press the edge)
+      ≤ 45% win rate → 0.65x  (cold streak — reduce exposure)
+      Otherwise      → 1.00x  (normal sizing)
+
+    Requires at least 5 settled trades to activate (avoids noise on tiny samples).
+    """
+    try:
+        from core.database import SessionLocal, TradeRow
+        with SessionLocal() as session:
+            recent = (
+                session.query(TradeRow)
+                .filter(TradeRow.outcome.in_(["WIN", "LOSS"]))
+                .order_by(TradeRow.settled_at.desc())
+                .limit(15)
+                .all()
+            )
+        if len(recent) < 5:
+            return 1.0
+        wins = sum(1 for t in recent if t.outcome == "WIN")
+        recent_rate = wins / len(recent)
+        if recent_rate >= 0.70:
+            logger.info(
+                "Dynamic Kelly: 1.25x (hot streak — recent win rate %.0f%%)",
+                recent_rate * 100,
+            )
+            return 1.25
+        if recent_rate <= 0.45:
+            logger.info(
+                "Dynamic Kelly: 0.65x (cold streak — recent win rate %.0f%%)",
+                recent_rate * 100,
+            )
+            return 0.65
+        return 1.0
+    except Exception:
+        return 1.0
+
+
 # ── Risk checks ───────────────────────────────────────────────────────────────
 
 def _check_risk(
@@ -153,6 +196,15 @@ async def evaluate_and_trade(
         bankroll_usdc=bankroll,
     )
 
+    # Apply dynamic Kelly multiplier (hot/cold streak adjustment)
+    kelly_mult = _dynamic_kelly_multiplier()
+    if kelly_mult != 1.0:
+        adjusted_bet = min(
+            sizing.bet_usdc * kelly_mult,
+            bankroll * settings.max_bet_fraction,
+        )
+        sizing = sizing.model_copy(update={"bet_usdc": max(0.0, adjusted_bet)})
+
     logger.info(
         "Risk check — side=%s, win_prob=%.3f, market_p=%.3f, "
         "kelly=%.3f, bet=$%.2f, bankroll=$%.2f",
@@ -205,6 +257,8 @@ async def evaluate_and_trade(
             "volume_24h_usdc":      market.volume_24h_usdc,
             "time_to_resolution_days": market.time_to_resolution_days,
             "current_yes_price":    market.yes_price,
+            "whale_bid_imbalance":  getattr(prediction, "_whale_bid_imbalance", 0.0),
+            "trend_score":          getattr(prediction, "_trend_score", 50.0),
         }
         trade.notes = json.dumps({"features": features_snapshot})
 

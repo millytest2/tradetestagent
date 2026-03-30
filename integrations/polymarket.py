@@ -44,14 +44,19 @@ def _parse_market(raw: dict) -> Optional[Market]:
         tokens = raw.get("tokens", [])
         yes_price = 0.5
         no_price = 0.5
+        yes_token_id = ""
+        no_token_id = ""
 
         for token in tokens:
             outcome = token.get("outcome", "").upper()
             price = float(token.get("price", 0.5))
+            token_id = token.get("token_id") or token.get("id") or ""
             if outcome == "YES":
                 yes_price = price
+                yes_token_id = str(token_id)
             elif outcome == "NO":
                 no_price = price
+                no_token_id = str(token_id)
 
         # Resolve end date
         end_date = raw.get("endDate") or raw.get("endDateIso") or ""
@@ -87,6 +92,8 @@ def _parse_market(raw: dict) -> Optional[Market]:
             price_change_24h=price_change_24h,
             time_to_resolution_days=max(0, days_left),
             tags=raw.get("tags") or [],
+            yes_token_id=yes_token_id,
+            no_token_id=no_token_id,
         )
     except Exception as e:
         logger.debug("Failed to parse market %s: %s", raw.get("id"), e)
@@ -140,6 +147,47 @@ async def get_order_book(token_id: str) -> Optional[dict]:
     except Exception as e:
         logger.debug("Order book fetch failed for %s: %s", token_id, e)
         return None
+
+
+async def get_whale_signal(market: Market, threshold_usdc: float = 5000.0) -> float:
+    """
+    Analyse the YES order book for large orders (whales).
+    Returns net buying pressure: +1.0 = all whales buying YES,
+    -1.0 = all whales selling YES (buying NO). 0.0 = no whale activity.
+    """
+    if not market.yes_token_id:
+        return 0.0
+
+    book = await get_order_book(market.yes_token_id)
+    if not book:
+        return 0.0
+
+    try:
+        def _whale_usdc(orders: list) -> float:
+            total = 0.0
+            for o in orders:
+                notional = float(o.get("price", 0)) * float(o.get("size", 0))
+                if notional >= threshold_usdc:
+                    total += notional
+            return total
+
+        bid_usdc = _whale_usdc(book.get("bids", []))
+        ask_usdc = _whale_usdc(book.get("asks", []))
+        total = bid_usdc + ask_usdc
+
+        if total < threshold_usdc:
+            return 0.0   # no meaningful whale activity
+
+        imbalance = (bid_usdc - ask_usdc) / total
+        logger.info(
+            "Whale signal: %.2f (bids=$%.0f asks=$%.0f) for %s",
+            imbalance, bid_usdc, ask_usdc, market.question[:50],
+        )
+        return float(max(-1.0, min(1.0, imbalance)))
+
+    except Exception as e:
+        logger.debug("Whale signal calc failed: %s", e)
+        return 0.0
 
 
 # ── Trade Execution (stub + real path) ───────────────────────────────────────

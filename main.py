@@ -172,13 +172,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             console.print(f"    [dim]↳ No trade signal[/dim]")
             continue
 
-        # Attach sentiment features so risk_agent can save them for ML retraining
+        # Attach research features so risk_agent can save them for ML retraining
         s = report.sentiment
-        prediction._sentiment_compound = s.compound
-        prediction._sentiment_positive = s.positive
-        prediction._sentiment_negative = s.negative
-        prediction._post_count = s.post_count
-        prediction._avg_engagement = s.avg_engagement
+        prediction._sentiment_compound  = s.compound
+        prediction._sentiment_positive  = s.positive
+        prediction._sentiment_negative  = s.negative
+        prediction._post_count          = s.post_count
+        prediction._avg_engagement      = s.avg_engagement
+        prediction._whale_bid_imbalance = report.whale_bid_imbalance
+        prediction._trend_score         = report.trend_score
 
         console.print(
             f"    [cyan]Signal:[/cyan] {prediction.side.value} "

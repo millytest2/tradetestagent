@@ -23,8 +23,10 @@ from core.models import (
     SentimentResult,
     SocialPost,
 )
+from integrations.polymarket import get_whale_signal
 from integrations.reddit import search_reddit
 from integrations.rss_feed import search_rss
+from integrations.trends import get_trend_score
 from integrations.twitter import search_twitter
 
 logger = logging.getLogger(__name__)
@@ -120,23 +122,31 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
 
     logger.info("Research agents starting for: %s", question[:80])
 
-    # Fire all three scrapers concurrently
+    # Fire all scrapers + signals concurrently
     twitter_task = asyncio.create_task(search_twitter(question, max_results=25))
-    reddit_task = asyncio.create_task(search_reddit(question, max_posts=20))
-    rss_task = asyncio.create_task(search_rss(question, max_per_feed=8))
+    reddit_task  = asyncio.create_task(search_reddit(question, max_posts=20))
+    rss_task     = asyncio.create_task(search_rss(question, max_per_feed=8))
+    trends_task  = asyncio.create_task(get_trend_score(question))
+    whale_task   = asyncio.create_task(get_whale_signal(flagged.market))
 
-    twitter_posts, reddit_posts, rss_posts = await asyncio.gather(
-        twitter_task, reddit_task, rss_task,
-        return_exceptions=True,
+    twitter_posts, reddit_posts, rss_posts, trend_score, whale_signal = (
+        await asyncio.gather(
+            twitter_task, reddit_task, rss_task, trends_task, whale_task,
+            return_exceptions=True,
+        )
     )
 
-    # Flatten — handle any exceptions from individual scrapers gracefully
+    # Flatten posts — handle any exceptions from individual scrapers gracefully
     all_posts: list[SocialPost] = []
     for result in [twitter_posts, reddit_posts, rss_posts]:
         if isinstance(result, list):
             all_posts.extend(result)
         elif isinstance(result, Exception):
             logger.warning("A research sub-agent failed: %s", result)
+
+    # Coerce signal results (default to neutral on failure)
+    trend_score_val    = trend_score    if isinstance(trend_score, float)    else 50.0
+    whale_signal_val   = whale_signal   if isinstance(whale_signal, float)   else 0.0
 
     sentiment = _compute_sentiment(all_posts)
     narrative = _compare_narrative_to_odds(sentiment, flagged.market.yes_price)
@@ -156,16 +166,20 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
         sentiment=sentiment,
         narrative_summary=narrative,
         key_claims=key_claims,
+        trend_score=trend_score_val,
+        whale_bid_imbalance=whale_signal_val,
     )
 
     logger.info(
         "Research done — %d posts (tw=%d, rd=%d, rss=%d), "
-        "sentiment=%.3f",
+        "sentiment=%.3f, trends=%.0f, whale=%+.2f",
         len(all_posts),
-        len(twitter_posts) if isinstance(twitter_posts, list) else 0,
-        len(reddit_posts) if isinstance(reddit_posts, list) else 0,
-        len(rss_posts) if isinstance(rss_posts, list) else 0,
+        len(twitter_posts)  if isinstance(twitter_posts,  list) else 0,
+        len(reddit_posts)   if isinstance(reddit_posts,   list) else 0,
+        len(rss_posts)      if isinstance(rss_posts,      list) else 0,
         sentiment.compound,
+        trend_score_val,
+        whale_signal_val,
     )
 
     return report

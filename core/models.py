@@ -50,6 +50,8 @@ class Market(BaseModel):
     flag_reason: str = ""
     tags: list[str] = Field(default_factory=list)
     fetched_at: datetime = Field(default_factory=datetime.utcnow)
+    yes_token_id: str = ""        # CLOB token ID for order book whale detection
+    no_token_id: str = ""
 
 
 class FlaggedMarket(BaseModel):
@@ -89,6 +91,8 @@ class ResearchReport(BaseModel):
     narrative_summary: str = ""
     key_claims: list[str] = Field(default_factory=list)
     researched_at: datetime = Field(default_factory=datetime.utcnow)
+    trend_score: float = 50.0          # Google Trends interest for this market's topic
+    whale_bid_imbalance: float = 0.0   # Net whale order book pressure on YES
 
 
 # ── Prediction Models ─────────────────────────────────────────────────────────
@@ -106,6 +110,8 @@ class PredictionFeatures(BaseModel):
     volume_24h_usdc: float
     time_to_resolution_days: float
     current_yes_price: float
+    whale_bid_imbalance: float = 0.0   # CLOB order book: -1=heavy sells, +1=heavy buys
+    trend_score: float = 50.0          # Google Trends interest 0-100 (50=average)
 
 
 class Prediction(BaseModel):

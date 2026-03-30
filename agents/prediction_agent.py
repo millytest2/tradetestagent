@@ -53,6 +53,8 @@ def _build_features(
         volume_24h_usdc=m.volume_24h_usdc,
         time_to_resolution_days=m.time_to_resolution_days,
         current_yes_price=m.yes_price,
+        whale_bid_imbalance=report.whale_bid_imbalance,
+        trend_score=report.trend_score,
     )
 
 
@@ -99,6 +101,10 @@ SOCIAL SENTIMENT (VADER, {s.post_count} posts):
   Positive:        {s.positive:.3f}
   Negative:        {s.negative:.3f}
   Avg engagement:  {s.avg_engagement:.1f}
+
+ON-CHAIN & SEARCH SIGNALS:
+  Whale order imbalance: {report.whale_bid_imbalance:+.2f}  (−1=heavy sells, 0=neutral, +1=heavy buys)
+  Google Trends score:   {report.trend_score:.0f}/100  (50=average interest, 100=peak)
 
 NARRATIVE ANALYSIS:
 {report.narrative_summary}
@@ -257,6 +263,26 @@ async def predict_market(
     xgb_weight = 0.60 if calibrator.is_trained else 0.40
     llm_weight = 1.0 - xgb_weight
     calibrated = xgb_weight * xgb_prob + llm_weight * llm_prob
+
+    # ── Contra-indicator: fade when extreme sentiment is already priced in ────
+    # If everyone is extremely bullish AND the market already prices YES high,
+    # the crowd is already in — dampen the YES edge (mean-revert toward market).
+    # Likewise for extreme bearish sentiment with a low YES price.
+    sentiment_compound = features.compound_sentiment
+    if abs(sentiment_compound) > 0.60:
+        market_already_reflects = (
+            (sentiment_compound > 0 and market.yes_price > 0.65) or
+            (sentiment_compound < 0 and market.yes_price < 0.35)
+        )
+        if market_already_reflects:
+            # Fade factor: stronger sentiment → stronger fade (max 30% pull-back)
+            fade = min(0.30, (abs(sentiment_compound) - 0.60) * 0.75)
+            calibrated = calibrated * (1 - fade) + market.yes_price * fade
+            logger.info(
+                "Contra-indicator: extreme sentiment (%.2f) already priced in "
+                "(market=%.3f) — fading %.0f%% toward market",
+                sentiment_compound, market.yes_price, fade * 100,
+            )
 
     # ── Gate on confidence ────────────────────────────────────────────────────
     if confidence < settings.min_confidence:
