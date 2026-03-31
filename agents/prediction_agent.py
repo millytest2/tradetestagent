@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 _client = anthropic.Anthropic(
     api_key=settings.anthropic_api_key,
-    timeout=60.0,   # hard 60-second cap per LLM call — prevents 30-min hangs
+    timeout=60.0,    # hard 60-second cap per request
+    max_retries=1,   # only 1 retry max — prevents 50-min hangs on bad connections
 )
 
 
@@ -257,6 +258,14 @@ async def predict_market(
                 else "PASS"
             )
             reasoning = f"[API fallback] Rule-based prior: sentiment={s.compound:+.3f}, market={market.yes_price:.3f}."
+            # Don't fire fallback trades on markets expiring very soon —
+            # rule-based prior has no time-awareness and can misfire badly
+            if market.time_to_resolution_days < 2:
+                logger.info(
+                    "API fallback blocked on near-expiry market (%.1fd) '%s'",
+                    market.time_to_resolution_days, market.question[:60],
+                )
+                return None
 
     # ── Ensemble ──────────────────────────────────────────────────────────────
     # Weight XGBoost more heavily when it has training data
