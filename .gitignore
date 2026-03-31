@@ -22,3 +22,6 @@ env/
 
 # OS
 .DS_Store
+
+# Claude Code internals
+.claude/
