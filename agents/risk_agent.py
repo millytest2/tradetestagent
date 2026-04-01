@@ -32,7 +32,6 @@ from core.models import (
     TradeOutcome,
     TradeStatus,
 )
-from integrations.polymarket import check_settlement, place_trade
 from utils.kelly import compute_bet_sizing
 
 logger = logging.getLogger(__name__)
@@ -279,56 +278,83 @@ async def evaluate_and_trade(
             sizing=sizing,
         )
 
+    # ── A/B variant assignment ─────────────────────────────────────────────────
+    ab_variant = "A"
+    if settings.ab_testing_enabled:
+        from core.ab_testing import get_variant_for_trade
+        variant = get_variant_for_trade()
+        ab_variant = variant.name
+        # Apply variant-specific parameters
+        if sizing.bet_usdc > 0:
+            from utils.kelly import compute_bet_sizing as _cbs
+            variant_sizing = _cbs(
+                win_prob=win_prob,
+                market_price=market_price,
+                bankroll_usdc=bankroll,
+                kelly_override=variant.kelly_fraction,
+            )
+            sizing = sizing.model_copy(update={"bet_usdc": variant_sizing.bet_usdc})
+
     # ── Execute trade ─────────────────────────────────────────────────────────
     logger.info(
-        "Trade APPROVED — placing %s on '%s' for $%.2f at %.3f [dry_run=%s]",
-        prediction.side.value, market.question[:60],
-        sizing.bet_usdc, market_price, dry_run,
+        "Trade APPROVED [Variant %s] — placing %s on '%s' for $%.2f at %.3f [dry_run=%s exchange=%s]",
+        ab_variant, prediction.side.value, market.question[:60],
+        sizing.bet_usdc, market_price, dry_run, settings.live_exchange,
     )
 
     try:
-        trade = await place_trade(
-            condition_id=market.condition_id,
-            side=prediction.side,
-            bet_usdc=sizing.bet_usdc,
-            price=market_price,
-            dry_run=dry_run,
-        )
+        # ── Exchange routing ───────────────────────────────────────────────────
+        exchange = settings.live_exchange.lower()
+        if exchange == "kalshi" or (exchange == "both" and market.condition_id.startswith("KXBTC") or True):
+            # Route to Kalshi for US users
+            from integrations.kalshi import place_trade as kalshi_place
+            # Try to find matching Kalshi market, fall back to Polymarket data
+            trade = await kalshi_place(
+                condition_id=market.condition_id,
+                side=prediction.side,
+                bet_usdc=sizing.bet_usdc,
+                price=market_price,
+                dry_run=dry_run,
+            )
+        else:
+            from integrations.polymarket import place_trade as poly_place
+            trade = await poly_place(
+                condition_id=market.condition_id,
+                side=prediction.side,
+                bet_usdc=sizing.bet_usdc,
+                price=market_price,
+                dry_run=dry_run,
+            )
         trade.question = market.question
 
-        # Persist to DB with feature snapshot for later ML training.
-        # Sentiment fields default to 0.0 here; main.py may pass them via
-        # extra_features to get the full picture.
         import json
         features_snapshot = {
-            "compound_sentiment":   getattr(prediction, "_sentiment_compound", 0.0),
-            "positive_sentiment":   getattr(prediction, "_sentiment_positive", 0.0),
-            "negative_sentiment":   getattr(prediction, "_sentiment_negative", 0.0),
-            "post_count":           getattr(prediction, "_post_count", 0),
-            "avg_engagement":       getattr(prediction, "_avg_engagement", 0.0),
-            "price_change_24h":     market.price_change_24h,
-            "spread":               market.spread,
-            "liquidity_usdc":       market.liquidity_usdc,
-            "volume_24h_usdc":      market.volume_24h_usdc,
+            "compound_sentiment":      getattr(prediction, "_sentiment_compound", 0.0),
+            "positive_sentiment":      getattr(prediction, "_sentiment_positive", 0.0),
+            "negative_sentiment":      getattr(prediction, "_sentiment_negative", 0.0),
+            "post_count":              getattr(prediction, "_post_count", 0),
+            "avg_engagement":          getattr(prediction, "_avg_engagement", 0.0),
+            "price_change_24h":        market.price_change_24h,
+            "spread":                  market.spread,
+            "liquidity_usdc":          market.liquidity_usdc,
+            "volume_24h_usdc":         market.volume_24h_usdc,
             "time_to_resolution_days": market.time_to_resolution_days,
-            "current_yes_price":    market.yes_price,
-            "whale_bid_imbalance":  getattr(prediction, "_whale_bid_imbalance", 0.0),
-            "trend_score":          getattr(prediction, "_trend_score", 50.0),
+            "current_yes_price":       market.yes_price,
+            "whale_bid_imbalance":     getattr(prediction, "_whale_bid_imbalance", 0.0),
+            "trend_score":             getattr(prediction, "_trend_score", 50.0),
         }
-        trade.notes = json.dumps({"features": features_snapshot})
+        trade.notes = json.dumps({
+            "features": features_snapshot,
+            "ab_variant": ab_variant,
+            "exchange": exchange,
+        })
 
         trade_id = save_trade(trade)
         trade.id = trade_id
+        logger.info("Trade placed — id=%d variant=%s exchange=%s tx=%s",
+                    trade_id, ab_variant, exchange, trade.tx_hash)
 
-        logger.info(
-            "Trade placed — id=%d, tx=%s", trade_id, trade.tx_hash
-        )
-
-        return TradeDecision(
-            approved=True,
-            prediction=prediction,
-            sizing=sizing,
-        )
+        return TradeDecision(approved=True, prediction=prediction, sizing=sizing)
 
     except Exception as e:
         logger.error("Trade execution failed: %s", e)

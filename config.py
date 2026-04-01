@@ -7,16 +7,28 @@ from pydantic import Field
 class Settings(BaseSettings):
     # ── API Keys ──────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
+
+    # Polymarket (for data scanning + live trading outside US)
     polymarket_private_key: str = ""
     polymarket_api_key: str = ""
     polymarket_api_secret: str = ""
     polymarket_api_passphrase: str = ""
+
+    # Kalshi (US-legal, CFTC-regulated — for live trading from US)
+    kalshi_api_key: str = ""
+    kalshi_api_secret: str = ""
 
     reddit_client_id: str = ""
     reddit_client_secret: str = ""
     reddit_user_agent: str = "prediction-market-bot/1.0"
 
     twitter_bearer_token: str = ""
+
+    # ── Exchange routing ──────────────────────────────────────────────────────
+    # "polymarket" = use Polymarket CLOB for live trades (requires non-US IP)
+    # "kalshi"     = use Kalshi for live trades (US-legal, recommended for US users)
+    # "both"       = scan Polymarket + Kalshi, route trades to best available
+    live_exchange: str = "kalshi"
 
     # ── Trading Parameters ────────────────────────────────────────────────────
     bankroll_usdc: float = Field(default=1000.0, ge=1.0)
@@ -45,6 +57,9 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 300
     weird_price_move_threshold: float = 0.05  # 5% price move in 24h
     weird_spread_threshold: float = 0.10      # 10% spread
+
+    # ── A/B testing ───────────────────────────────────────────────────────────
+    ab_testing_enabled: bool = True
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

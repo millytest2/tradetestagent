@@ -109,54 +109,75 @@ def _priority_score(market: Market, flag_reason: str) -> float:
     return score
 
 
-async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
-    """
-    Scan prediction markets and return flagged opportunities.
-
-    Pipeline:
-      1. Fetch up to `limit` active markets from Polymarket
-      2. Apply base filters (liquidity, volume, time window)
-      3. Detect anomalies (price moves, spreads)
-      4. Score and sort by opportunity priority
-    """
-    logger.info("Scan agent starting — fetching up to %d markets...", limit)
-
-    markets = await get_active_markets(limit=limit)
-    if not markets:
-        logger.warning("No markets returned from Polymarket API")
-        return []
-
-    passing: list[Market] = []
-    for m in markets:
-        if _passes_base_filter(m):
-            passing.append(m)
-
-    logger.info(
-        "%d / %d markets passed base filter (liq≥$%.0f, vol≥$%.0f, %d–%dd)",
-        len(passing), len(markets),
-        settings.min_liquidity_usdc, settings.min_volume_usdc,
-        settings.min_time_to_resolution_days, settings.max_time_to_resolution_days,
-    )
-
+def _flag_and_score(markets: list[Market], source: str) -> list[FlaggedMarket]:
+    """Apply anomaly detection and scoring to a list of markets."""
     flagged: list[FlaggedMarket] = []
-    for m in passing:
+    for m in markets:
+        if not _passes_base_filter(m):
+            continue
         is_flagged, reason = _detect_anomaly(m)
         m.is_flagged = is_flagged
         m.flag_reason = reason
         score = _priority_score(m, reason)
-
         flagged.append(FlaggedMarket(
             market=m,
-            flag_reason=reason or "base filter pass",
+            flag_reason=(reason or f"{source} base filter pass"),
             priority_score=score,
         ))
+    return flagged
 
-    # Sort highest priority first
+
+async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
+    """
+    Scan prediction markets from Polymarket AND Kalshi (if configured).
+
+    Pipeline:
+      1. Fetch markets from Polymarket Gamma API (always — no geoblock on reads)
+      2. Optionally fetch markets from Kalshi (US-legal exchange)
+      3. Apply base filters, detect anomalies, score
+      4. Merge and sort by opportunity priority
+    """
+    import asyncio as _asyncio
+
+    logger.info("Scan agent starting (exchange=%s)...", settings.live_exchange)
+
+    # Always fetch Polymarket data (reads are never geoblocked)
+    poly_task = _asyncio.create_task(get_active_markets(limit=limit))
+
+    # Fetch Kalshi markets if credentials are set
+    kalshi_task = None
+    if settings.kalshi_api_key:
+        from integrations.kalshi import get_active_markets as kalshi_get
+        kalshi_task = _asyncio.create_task(kalshi_get(limit=200))
+
+    poly_markets = await poly_task
+    kalshi_markets = []
+    if kalshi_task:
+        try:
+            kalshi_markets = await kalshi_task
+        except Exception as e:
+            logger.warning("Kalshi scan failed: %s", e)
+
+    logger.info(
+        "Fetched %d Polymarket + %d Kalshi markets",
+        len(poly_markets), len(kalshi_markets),
+    )
+
+    # Deduplicate by question text (rough match)
+    seen_questions: set[str] = set()
+    all_markets: list[Market] = []
+    for m in poly_markets + kalshi_markets:
+        key = m.question[:60].lower().strip()
+        if key not in seen_questions:
+            seen_questions.add(key)
+            all_markets.append(m)
+
+    flagged = _flag_and_score(all_markets, source="combined")
     flagged.sort(key=lambda x: x.priority_score, reverse=True)
 
     anomaly_count = sum(1 for f in flagged if f.market.is_flagged)
     logger.info(
-        "Scan complete — %d markets queued (%d with anomalies)",
-        len(flagged), anomaly_count,
+        "Scan complete — %d markets queued (%d with anomalies, %d total fetched)",
+        len(flagged), anomaly_count, len(all_markets),
     )
     return flagged

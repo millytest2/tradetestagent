@@ -453,6 +453,101 @@ try:
 except Exception as e:
     st.error(str(e))
 
+# ── A/B Split Test Panel ─────────────────────────────────────────────────────
+
+st.divider()
+st.markdown("#### 🔬 A/B Strategy Split Test")
+
+try:
+    from core.ab_testing import get_stats, VARIANT_A, VARIANT_B
+    ab = get_stats()
+    results = ab.get("results", {})
+    winner = ab.get("winner")
+    enough = ab.get("enough_data", False)
+
+    col_a, col_b, col_ab_summary = st.columns(3)
+
+    for col, v_key, variant_def in [(col_a, "A", VARIANT_A), (col_b, "B", VARIANT_B)]:
+        with col:
+            r = results.get(v_key, {})
+            wr = r.get("win_rate", 0.0)
+            n = r.get("trades", 0)
+            pnl = r.get("pnl", 0.0)
+            badge = " 🏆 WINNER" if winner == v_key else ""
+            st.markdown(f"**Variant {v_key} — {variant_def.label}{badge}**")
+            st.metric("Win Rate", f"{wr:.1%}", f"{n} trades")
+            st.metric("PnL", f"${pnl:+.2f}")
+            st.caption(
+                f"Edge≥{variant_def.min_edge:.0%} | "
+                f"Kelly {variant_def.kelly_fraction:.0%} | "
+                f"Conf≥{variant_def.min_confidence:.0%}"
+            )
+
+    with col_ab_summary:
+        st.markdown("**Status**")
+        if winner:
+            st.success(f"✅ Variant {winner} promoted as winner")
+        elif enough:
+            st.info("📊 Enough data — analyzing...")
+        else:
+            mins_left = max(0, 15 - results.get("A", {}).get("trades", 0))
+            st.warning(f"⏳ Need ~{mins_left} more trades per variant to decide")
+        if winner:
+            st.caption("All future trades use the winning variant.")
+        else:
+            st.caption("50/50 split active — collecting data on both strategies.")
+except Exception as _e:
+    st.info("A/B testing data not yet available.")
+
+# ── Exchange status ───────────────────────────────────────────────────────────
+
+st.divider()
+col_ex1, col_ex2 = st.columns(2)
+
+with col_ex1:
+    st.markdown("#### 🌐 Exchange Status")
+    ex = settings.live_exchange
+    st.markdown(f"**Active exchange:** `{ex}`")
+
+    # Polymarket geoblock status
+    import httpx as _httpx
+    try:
+        r = _httpx.get("https://clob.polymarket.com/", timeout=4)
+        data = r.json() if r.headers.get("content-type","").startswith("application/json") else {}
+        blocked = data.get("blocked", False)
+        if blocked:
+            st.warning("🔴 Polymarket CLOB: Geoblocked (US IP). Using for data only.")
+        else:
+            st.success("🟢 Polymarket CLOB: Reachable")
+    except Exception:
+        st.info("⚪ Polymarket CLOB: Status unknown")
+
+    if settings.kalshi_api_key:
+        st.success("🟢 Kalshi: API key configured (US-legal)")
+    else:
+        st.warning("⚪ Kalshi: No API key set — add KALSHI_API_KEY to .env")
+
+with col_ex2:
+    st.markdown("#### 📊 Trade Count by Exchange")
+    try:
+        import json as _json
+        with SessionLocal() as s:
+            all_t = s.query(TradeRow).all()
+        ex_counts: dict = {}
+        for t in all_t:
+            try:
+                n = _json.loads(t.notes or "{}").get("exchange", "polymarket")
+            except Exception:
+                n = "polymarket"
+            ex_counts[n] = ex_counts.get(n, 0) + 1
+        if ex_counts:
+            for ex_name, cnt in ex_counts.items():
+                st.metric(ex_name.capitalize(), f"{cnt} trades")
+        else:
+            st.info("No trades yet.")
+    except Exception as e:
+        st.error(str(e))
+
 # ── Auto-refresh ──────────────────────────────────────────────────────────────
 
 time.sleep(REFRESH_INTERVAL)

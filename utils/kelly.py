@@ -30,6 +30,7 @@ def compute_bet_sizing(
     win_prob: float,
     market_price: float,
     bankroll_usdc: float,
+    kelly_override: float = None,
 ) -> BetSizing:
     """
     Compute bet size using fractional Kelly.
@@ -53,7 +54,8 @@ def compute_bet_sizing(
 
     odds = 1.0 / market_price          # decimal odds
     kf_full = kelly_fraction(win_prob, odds)
-    kf_used = kf_full * settings.kelly_fraction  # fractional Kelly
+    fraction = kelly_override if kelly_override is not None else settings.kelly_fraction
+    kf_used = kf_full * fraction  # fractional Kelly
 
     # Cap at max_bet_fraction of bankroll
     max_allowed = bankroll_usdc * settings.max_bet_fraction
