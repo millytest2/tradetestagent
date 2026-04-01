@@ -215,13 +215,34 @@ async def run_simulation(n_trades: int) -> None:
         ("0xsim008", "Will Nvidia hit $200/share by Q4 2025?", 0.61),
     ]
 
-    import uuid
+    import uuid, json as _json
     for i in range(n_trades):
         mid, question, yes_price = random.choice(sample_markets)
         side = MarketSide.YES if random.random() > 0.3 else MarketSide.NO
         entry = yes_price if side == MarketSide.YES else (1 - yes_price)
-        bet = random.uniform(10, 100)
+
+        # Realistic randomised bet sizing (Kelly-based, capped at 10% bankroll)
+        edge = random.uniform(0.04, 0.22)
+        bet = min(random.uniform(8, 60), 100.0)   # cap at $100 to limit drawdown
         shares = bet / max(entry, 0.01)
+
+        # Full 13-feature snapshot with realistic random variation
+        sentiment = random.gauss(0.1, 0.3)
+        features = {
+            "compound_sentiment":      round(max(-1.0, min(1.0, sentiment)), 4),
+            "positive_sentiment":      round(max(0, sentiment * 0.6 + random.uniform(0, 0.3)), 4),
+            "negative_sentiment":      round(max(0, -sentiment * 0.4 + random.uniform(0, 0.2)), 4),
+            "post_count":              random.randint(3, 80),
+            "avg_engagement":          round(random.uniform(5, 500), 1),
+            "price_change_24h":        round(random.uniform(0, 0.12), 4),
+            "spread":                  round(random.uniform(0.01, 0.08), 4),
+            "liquidity_usdc":          round(random.uniform(1000, 50000), 0),
+            "volume_24h_usdc":         round(random.uniform(500, 20000), 0),
+            "time_to_resolution_days": round(random.uniform(1, 30), 1),
+            "current_yes_price":       yes_price,
+            "whale_bid_imbalance":     round(random.gauss(0, 0.3), 4),
+            "trend_score":             round(random.uniform(20, 90), 1),
+        }
 
         trade = Trade(
             market_id=f"{mid}_sim{i}",
@@ -233,7 +254,7 @@ async def run_simulation(n_trades: int) -> None:
             status=TradeStatus.PLACED,
             outcome=TradeOutcome.PENDING,
             tx_hash=f"sim_{uuid.uuid4().hex[:12]}",
-            notes='{"features": {"compound_sentiment": 0.1, "current_yes_price": ' + str(yes_price) + ', "edge": 0.08, "confidence": 0.70}}',
+            notes=_json.dumps({"features": features, "ab_variant": random.choice(["A","B"]), "exchange": "paper"}),
         )
         trade.id = save_trade(trade)
 

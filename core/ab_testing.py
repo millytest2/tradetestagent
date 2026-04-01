@@ -78,13 +78,14 @@ def get_variant_for_trade() -> StrategyVariant:
     - If a variant has been statistically promoted, always use it.
     - Otherwise, randomly split 50/50 (controlled A/B test).
     """
+    global _current_promoted
+
     if _current_promoted:
         return VARIANTS[_current_promoted]
 
     # Check DB for a promoted variant
     promoted = _get_promoted_from_db()
     if promoted:
-        global _current_promoted
         _current_promoted = promoted
         logger.info("A/B: Using promoted variant %s", promoted)
         return VARIANTS[promoted]

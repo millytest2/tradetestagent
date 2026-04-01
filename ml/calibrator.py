@@ -180,14 +180,21 @@ class ProbabilityCalibrator:
             now_ts = datetime.now(timezone.utc).timestamp()
             HALF_LIFE_DAYS = 30.0
             decay_rate = np.log(2) / (HALF_LIFE_DAYS * 86400)
-            settled_ts = pd.to_numeric(
-                pd.to_datetime(df.get("settled_at", pd.Series(dtype=str)), utc=True, errors="coerce"),
-                errors="coerce",
-            ) / 1e9   # ns → s
+            if "settled_at" in df.columns:
+                settled_ts = pd.to_numeric(
+                    pd.to_datetime(df["settled_at"], utc=True, errors="coerce"),
+                    errors="coerce",
+                ) / 1e9   # ns → s
+            else:
+                settled_ts = pd.Series([now_ts] * len(df))
             settled_ts = settled_ts.fillna(now_ts)
             age_seconds = np.maximum(0, now_ts - settled_ts.values)
             sample_weights = np.exp(-decay_rate * age_seconds).astype(float)
-            sample_weights /= sample_weights.mean()   # normalise to mean=1
+            mean_w = sample_weights.mean()
+            if mean_w > 0:
+                sample_weights /= mean_w   # normalise to mean=1
+            else:
+                sample_weights = np.ones(len(sample_weights))
             # ─────────────────────────────────────────────────────────────────
 
             base = XGBClassifier(
