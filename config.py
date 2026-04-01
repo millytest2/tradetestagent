@@ -15,8 +15,10 @@ class Settings(BaseSettings):
     polymarket_api_passphrase: str = ""
 
     # Kalshi (US-legal, CFTC-regulated — for live trading from US)
-    kalshi_api_key: str = ""
-    kalshi_api_secret: str = ""
+    # Auth uses RSA-PSS: generate key pair at kalshi.com → Settings → API
+    kalshi_api_key: str = ""              # Key ID (UUID from Kalshi dashboard)
+    kalshi_private_key_path: str = "./kalshi_private.pem"  # path to PEM file
+    kalshi_demo: bool = False             # True = use demo/paper environment
 
     reddit_client_id: str = ""
     reddit_client_secret: str = ""
