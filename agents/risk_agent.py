@@ -83,6 +83,11 @@ def _check_rolling_circuit_breaker() -> None:
             with open(CIRCUIT_BREAKER_FILE, "w") as f:
                 f.write(msg)
             logger.critical("CIRCUIT BREAKER TRIGGERED: %s", msg)
+            try:
+                from utils.notifications import notify_circuit_breaker
+                notify_circuit_breaker(win_rate=rate, window=CIRCUIT_BREAKER_WINDOW)
+            except Exception:
+                pass
             raise RuntimeError(f"TRADING PAUSED — {msg}")
 
     except RuntimeError:
@@ -353,6 +358,20 @@ async def evaluate_and_trade(
         trade.id = trade_id
         logger.info("Trade placed — id=%d variant=%s exchange=%s tx=%s",
                     trade_id, ab_variant, exchange, trade.tx_hash)
+
+        # Email alert for the placed trade
+        try:
+            from utils.notifications import notify_trade_placed
+            notify_trade_placed(
+                question=market.question,
+                side=prediction.side.value,
+                bet_usdc=sizing.bet_usdc,
+                price=market_price,
+                edge=prediction.edge,
+                bankroll=bankroll,
+            )
+        except Exception:
+            pass
 
         return TradeDecision(approved=True, prediction=prediction, sizing=sizing)
 

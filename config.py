@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     # ── A/B testing ───────────────────────────────────────────────────────────
     ab_testing_enabled: bool = True
 
+    # ── Email notifications ───────────────────────────────────────────────────
+    # Gmail: myaccount.google.com → Security → App Passwords → generate one
+    notify_email: str = ""              # destination address (your inbox)
+    notify_from_email: str = ""         # sending address (gmail account)
+    notify_smtp_password: str = ""      # Gmail App Password (16-char)
+    notify_smtp_host: str = "smtp.gmail.com"
+    notify_smtp_port: int = 587
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 

@@ -33,7 +33,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.panel import Panel
@@ -213,6 +213,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         f"in {(datetime.utcnow() - cycle_start).seconds}s"
     )
 
+    # ── Milestone check ───────────────────────────────────────────────────────
+    try:
+        from utils.notifications import check_and_notify_milestone
+        stats = get_trade_stats()
+        bankroll_now = settings.bankroll_usdc + stats.get("total_pnl_usdc", 0)
+        check_and_notify_milestone(bankroll_now)
+    except Exception as e:
+        logger.debug("Milestone check failed (non-blocking): %s", e)
+
     # ── Step 5: Postmortems for any settled losses ────────────────────────────
     await _run_pending_postmortems()
 
@@ -297,6 +306,8 @@ async def main_loop(dry_run: bool, interval_seconds: int) -> None:
             "(rule-based predictions, no LLM calls)[/yellow]"
         )
 
+    _last_daily_summary_date = None
+
     while True:
         try:
             await run_pipeline(dry_run=dry_run)
@@ -305,6 +316,25 @@ async def main_loop(dry_run: bool, interval_seconds: int) -> None:
             break
         except Exception as e:
             logger.error("Pipeline error: %s", e, exc_info=True)
+
+        # Daily summary email at ~9pm UTC
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        if now.hour >= 21 and _last_daily_summary_date != today:
+            _last_daily_summary_date = today
+            try:
+                from utils.notifications import send_daily_summary
+                stats = get_trade_stats()
+                send_daily_summary({
+                    "win_rate":       stats.get("win_rate", 0),
+                    "total_pnl_usdc": stats.get("total_pnl_usdc", 0),
+                    "total":          stats.get("total", 0),
+                    "wins":           stats.get("wins", 0),
+                    "losses":         stats.get("losses", 0),
+                    "pending":        stats.get("pending", 0),
+                })
+            except Exception as e:
+                logger.debug("Daily summary failed (non-blocking): %s", e)
 
         console.print(
             f"\n[dim]Next scan in {interval_seconds}s "
@@ -350,6 +380,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--paper-blast", action="store_true",
         help="Relaxed thresholds for fast paper trade accumulation (min_confidence=0.60, top-n=20)",
+    )
+    p.add_argument(
+        "--daemon", action="store_true",
+        help="Run forever in background, logging to bot.log (use with nohup or screen)",
     )
     return p.parse_args()
 
@@ -404,6 +438,26 @@ if __name__ == "__main__":
             "[dim]These settings are paper-only and reset on next run.[/dim]",
             border_style="yellow",
         ))
+
+    if args.daemon:
+        # Redirect all logging to bot.log for background operation
+        file_handler = logging.FileHandler("bot.log")
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        logging.getLogger().addHandler(file_handler)
+        console.print(
+            "[bold green]🤖 Bot started in daemon mode[/bold green] — "
+            "logging to [cyan]bot.log[/cyan]\n"
+            "  Stop with: [dim]kill $(cat bot.pid)[/dim]\n"
+            f"  Exchange: [cyan]{settings.live_exchange}[/cyan] | "
+            f"Bankroll: [cyan]${settings.bankroll_usdc:,.0f}[/cyan] | "
+            f"Live: [{'red' if not dry_run else 'dim'}]{'YES' if not dry_run else 'NO (paper)'}[/{'red' if not dry_run else 'dim'}]"
+        )
+        import os
+        with open("bot.pid", "w") as f:
+            f.write(str(os.getpid()))
 
     if args.run_once or args.demo or args.cycles > 1 or args.paper_blast:
         _print_banner()
