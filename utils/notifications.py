@@ -32,7 +32,7 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 # Milestones in USD — bot emails you when bankroll crosses these
-MILESTONES = [200, 300, 400, 500, 750, 1000, 1500, 2000, 3000, 5000]
+MILESTONES = [200, 300, 400, 500, 600, 750, 1000, 1500, 2000, 3000, 5000]
 
 # File to track which milestones have already been notified
 _MILESTONE_FILE = ".notified_milestones.txt"
