@@ -135,10 +135,16 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
     else:
         _whale_fn = get_whale_signal
     whale_task   = asyncio.create_task(_whale_fn(flagged.market))
+    # Public wallet-whale signal: how the biggest on-chain wallets are
+    # positioned on the matching international market (read-only public data).
+    from integrations.whale_tracker import get_wallet_whale_signal
+    wallet_whale_task = asyncio.create_task(get_wallet_whale_signal(question))
 
-    twitter_posts, reddit_posts, rss_posts, trend_score, whale_signal = (
+    (twitter_posts, reddit_posts, rss_posts, trend_score,
+     whale_signal, wallet_whale) = (
         await asyncio.gather(
-            twitter_task, reddit_task, rss_task, trends_task, whale_task,
+            twitter_task, reddit_task, rss_task, trends_task,
+            whale_task, wallet_whale_task,
             return_exceptions=True,
         )
     )
@@ -153,7 +159,12 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
 
     # Coerce signal results (default to neutral on failure)
     trend_score_val    = trend_score    if isinstance(trend_score, float)    else 50.0
-    whale_signal_val   = whale_signal   if isinstance(whale_signal, float)   else 0.0
+    ob_whale           = whale_signal   if isinstance(whale_signal, float)   else 0.0
+    wallet_whale_val   = wallet_whale   if isinstance(wallet_whale, float)   else 0.0
+    # Blend order-book whales + on-chain wallet whales (average the non-zero
+    # signals so the prediction sees combined whale pressure).
+    _whales = [w for w in (ob_whale, wallet_whale_val) if w != 0.0]
+    whale_signal_val   = sum(_whales) / len(_whales) if _whales else 0.0
 
     sentiment = _compute_sentiment(all_posts)
     narrative = _compare_narrative_to_odds(sentiment, flagged.market.yes_price)
