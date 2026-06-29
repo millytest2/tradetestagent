@@ -141,6 +141,20 @@ async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
 
     logger.info("Scan agent starting (exchange=%s)...", settings.live_exchange)
 
+    # When trading on Polymarket US, scan its NATIVE markets so the slugs we
+    # send for execution actually exist there (the international Gamma slugs
+    # don't match the US system).
+    if settings.live_exchange.lower() in ("polymarket_us", "polymarketus", "pmus"):
+        from integrations.polymarket_us import get_active_markets as pmus_get
+        us_markets = await pmus_get(limit=limit)
+        flagged = _flag_and_score(us_markets, source="polymarket_us")
+        flagged.sort(key=lambda x: x.priority_score, reverse=True)
+        logger.info(
+            "Scan complete — %d US markets queued (%d total fetched)",
+            len(flagged), len(us_markets),
+        )
+        return flagged
+
     # Always fetch Polymarket data (reads are never geoblocked)
     poly_task = _asyncio.create_task(get_active_markets(limit=limit))
 

@@ -40,23 +40,69 @@ async def fetch_markets(limit: int = 300, offset: int = 0) -> list[dict]:
 def _parse_market(raw: dict) -> Optional[Market]:
     """Parse a raw Gamma API market response into a Market model."""
     try:
-        # Extract prices from tokens (YES/NO)
-        tokens = raw.get("tokens", [])
+        import json as _json
         yes_price = 0.5
         no_price = 0.5
         yes_token_id = ""
         no_token_id = ""
 
-        for token in tokens:
-            outcome = token.get("outcome", "").upper()
-            price = float(token.get("price", 0.5))
-            token_id = token.get("token_id") or token.get("id") or ""
-            if outcome == "YES":
-                yes_price = price
-                yes_token_id = str(token_id)
-            elif outcome == "NO":
-                no_price = price
-                no_token_id = str(token_id)
+        def _maybe_json(v):
+            """Gamma encodes arrays as JSON strings, e.g. '["Yes","No"]'."""
+            if isinstance(v, str):
+                try:
+                    return _json.loads(v)
+                except Exception:
+                    return None
+            return v
+
+        # ── Format A: Gamma API (outcomes / outcomePrices / clobTokenIds) ──────
+        outcomes_list = _maybe_json(raw.get("outcomes")) or []
+        prices_list   = _maybe_json(raw.get("outcomePrices")) or []
+        clob_ids      = _maybe_json(raw.get("clobTokenIds")) or []
+
+        if outcomes_list and clob_ids:
+            for i, oc in enumerate(outcomes_list):
+                ocu = str(oc).strip().upper()
+                if ocu == "YES":
+                    if i < len(prices_list):
+                        yes_price = float(prices_list[i])
+                    if i < len(clob_ids):
+                        yes_token_id = str(clob_ids[i])
+                elif ocu == "NO":
+                    if i < len(prices_list):
+                        no_price = float(prices_list[i])
+                    if i < len(clob_ids):
+                        no_token_id = str(clob_ids[i])
+            # Positional fallback when outcomes aren't literally "Yes"/"No"
+            if not yes_token_id and len(clob_ids) >= 1:
+                yes_token_id = str(clob_ids[0])
+            if not no_token_id and len(clob_ids) >= 2:
+                no_token_id = str(clob_ids[1])
+            if yes_price == 0.5 and len(prices_list) >= 1:
+                try: yes_price = float(prices_list[0])
+                except Exception: pass
+            if no_price == 0.5 and len(prices_list) >= 2:
+                try: no_price = float(prices_list[1])
+                except Exception: pass
+        else:
+            # ── Format B: CLOB tokens array (legacy) ──────────────────────────
+            tokens = raw.get("tokens", [])
+            for token in tokens:
+                outcome = token.get("outcome", "").upper()
+                price = float(token.get("price", 0.5))
+                token_id = token.get("token_id") or token.get("id") or ""
+                if outcome == "YES":
+                    yes_price = price
+                    yes_token_id = str(token_id)
+                elif outcome == "NO":
+                    no_price = price
+                    no_token_id = str(token_id)
+
+        # Derive the complementary price if only one side was found
+        if no_price == 0.5 and yes_price != 0.5:
+            no_price = 1.0 - yes_price
+        elif yes_price == 0.5 and no_price != 0.5:
+            yes_price = 1.0 - no_price
 
         # Resolve end date
         end_date = raw.get("endDate") or raw.get("endDateIso") or ""
@@ -81,6 +127,7 @@ def _parse_market(raw: dict) -> Optional[Market]:
 
         return Market(
             condition_id=raw.get("conditionId") or raw.get("id") or "",
+            slug=raw.get("slug") or "",
             question=raw.get("question") or raw.get("title") or "Unknown",
             description=raw.get("description") or "",
             end_date_iso=end_date,
@@ -227,45 +274,71 @@ async def place_trade(
     # ── Live execution via py-clob-client ─────────────────────────────────────
     try:
         from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType, ApiCreds
+        from py_clob_client.order_builder.constants import BUY, SELL
 
-        from py_clob_client.clob_types import ApiCreds
-        client = ClobClient(
+        private_key = settings.polymarket_private_key
+        if not private_key:
+            raise ValueError(
+                "POLYMARKET_PRIVATE_KEY not set in .env — "
+                "export your wallet private key from Polymarket Settings → Wallet → Export"
+            )
+
+        # Derive the wallet address (funder) from the private key
+        from eth_account import Account
+        funder = Account.from_key(private_key).address
+        logger.info("Polymarket wallet address: %s", funder)
+
+        # signature_type=1: Polymarket proxy/email embedded wallet (Privy)
+        # signature_type=0: direct EOA (MetaMask, hardware wallet)
+        # Configurable via POLYMARKET_SIGNATURE_TYPE env var; default=1 for Privy
+        sig_type = int(getattr(settings, "polymarket_signature_type", 1))
+
+        # Derive API creds from private key (idempotent — same key → same creds)
+        base_client = ClobClient(
             host=CLOB_BASE,
-            chain_id=137,  # Polygon mainnet
-            key=settings.polymarket_private_key,
-            signature_type=2,  # EIP-712
+            chain_id=137,
+            key=private_key,
+            signature_type=sig_type,
+            funder=funder,
         )
-        creds = client.create_or_derive_api_creds()
+        creds = base_client.create_or_derive_api_creds()
+
         client = ClobClient(
             host=CLOB_BASE,
             chain_id=137,
-            key=settings.polymarket_private_key,
+            key=private_key,
             creds=creds,
-            signature_type=2,
+            signature_type=sig_type,
+            funder=funder,
         )
 
-        # Determine token_id for the outcome
+        # Fetch market to get correct token_id for the outcome side
         market = await get_market_by_id(condition_id)
         if not market:
             raise ValueError(f"Market {condition_id} not found")
 
-        # Calculate shares from bet amount
-        shares = bet_usdc / max(price, 1e-6)
+        clob_side = BUY if side == MarketSide.YES else SELL
+        token_id = market.yes_token_id if side == MarketSide.YES else market.no_token_id
 
-        order_args = OrderArgs(
-            token_id=condition_id,
-            price=price,
-            size=shares,
-            side=side.value,
+        if not token_id:
+            raise ValueError(f"No token_id for {side.value} side of {condition_id}")
+
+        # Market order: spend exactly bet_usdc at best available price (FOK)
+        mo = MarketOrderArgs(
+            token_id=token_id,
+            amount=bet_usdc,
+            side=clob_side,
         )
-        signed_order = client.create_and_sign_order(order_args)
-        resp = client.post_order(signed_order, OrderType.GTC)
+        signed_order = client.create_market_order(mo)
+        resp = client.post_order(signed_order, OrderType.FOK)
 
         tx_hash = resp.get("orderID", "") or resp.get("transactionHash", "")
+        shares = bet_usdc / max(price, 1e-6)
+
         logger.info(
-            "Order placed: %s %s on %s — tx %s",
-            side.value, f"${bet_usdc:.2f}", condition_id, tx_hash,
+            "Polymarket order placed: %s $%.2f on %s — tx %s",
+            side.value, bet_usdc, condition_id, tx_hash,
         )
 
         return Trade(
@@ -280,7 +353,7 @@ async def place_trade(
         )
 
     except ImportError:
-        logger.error("py-clob-client not installed — falling back to dry run")
+        logger.error("py-clob-client not installed — pip install py-clob-client")
         shares = bet_usdc / max(price, 1e-6)
         return Trade(
             market_id=condition_id,

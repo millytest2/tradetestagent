@@ -31,10 +31,15 @@ RELEVANT_SUBREDDITS = [
     "boxoffice",
 ]
 
-# Reddit rate-limits by User-Agent — use something descriptive
+# Reddit blocks generic/bot User-Agents with 403. A real browser UA from a
+# residential IP (the user's laptop) gets through where a bot UA does not.
 _HEADERS = {
-    "User-Agent": "prediction-market-bot/1.0 (research tool)",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
     "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 

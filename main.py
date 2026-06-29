@@ -33,7 +33,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.panel import Panel
@@ -100,8 +100,13 @@ def _print_stats() -> None:
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 
-async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = False) -> None:
-    """Execute one full scan→research→predict→risk cycle."""
+async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = False,
+                       max_trades: int = None) -> None:
+    """Execute one full scan→research→predict→risk cycle.
+
+    max_trades: if set, stop after this many trades are placed (used by
+    --test-trade to place exactly one small verification trade).
+    """
 
     cycle_start = datetime.utcnow()
     console.rule(f"[cyan]Cycle started {cycle_start.strftime('%H:%M:%S UTC')}[/cyan]")
@@ -203,6 +208,12 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 f"odds={sz.odds:.2f}x)"
             )
             trades_placed += 1
+            if max_trades and trades_placed >= max_trades:
+                console.print(
+                    f"    [yellow]→ Reached max_trades={max_trades} — "
+                    f"stopping after this trade[/yellow]"
+                )
+                break
         else:
             console.print(
                 f"    [red]✗ Blocked:[/red] {decision.rejection_reason}"
@@ -212,6 +223,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         f"\n  ✓ Cycle done — [green]{trades_placed}[/green] trades placed "
         f"in {(datetime.utcnow() - cycle_start).seconds}s"
     )
+
+    # ── Milestone check ───────────────────────────────────────────────────────
+    try:
+        from utils.notifications import check_and_notify_milestone
+        stats = get_trade_stats()
+        bankroll_now = settings.bankroll_usdc + stats.get("total_pnl_usdc", 0)
+        check_and_notify_milestone(bankroll_now)
+    except Exception as e:
+        logger.debug("Milestone check failed (non-blocking): %s", e)
 
     # ── Step 5: Postmortems for any settled losses ────────────────────────────
     await _run_pending_postmortems()
@@ -286,7 +306,7 @@ def retrain_model() -> None:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
-async def main_loop(dry_run: bool, interval_seconds: int) -> None:
+async def main_loop(dry_run: bool, interval_seconds: int, max_trades: int = None) -> None:
     """Run the pipeline continuously at the specified interval."""
     _print_banner()
     init_db()
@@ -297,14 +317,35 @@ async def main_loop(dry_run: bool, interval_seconds: int) -> None:
             "(rule-based predictions, no LLM calls)[/yellow]"
         )
 
+    _last_daily_summary_date = None
+
     while True:
         try:
-            await run_pipeline(dry_run=dry_run)
+            await run_pipeline(dry_run=dry_run, max_trades=max_trades)
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted — exiting.[/yellow]")
             break
         except Exception as e:
             logger.error("Pipeline error: %s", e, exc_info=True)
+
+        # Daily summary email at ~9pm UTC
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        if now.hour >= 21 and _last_daily_summary_date != today:
+            _last_daily_summary_date = today
+            try:
+                from utils.notifications import send_daily_summary
+                stats = get_trade_stats()
+                send_daily_summary({
+                    "win_rate":       stats.get("win_rate", 0),
+                    "total_pnl_usdc": stats.get("total_pnl_usdc", 0),
+                    "total":          stats.get("total", 0),
+                    "wins":           stats.get("wins", 0),
+                    "losses":         stats.get("losses", 0),
+                    "pending":        stats.get("pending", 0),
+                })
+            except Exception as e:
+                logger.debug("Daily summary failed (non-blocking): %s", e)
 
         console.print(
             f"\n[dim]Next scan in {interval_seconds}s "
@@ -351,6 +392,19 @@ def parse_args() -> argparse.Namespace:
         "--paper-blast", action="store_true",
         help="Relaxed thresholds for fast paper trade accumulation (min_confidence=0.60, top-n=20)",
     )
+    p.add_argument(
+        "--test-trade", action="store_true",
+        help="Place exactly ONE small (~$1-2) real trade to verify the live "
+             "order pipeline works end-to-end. Use with --live.",
+    )
+    p.add_argument(
+        "--daemon", action="store_true",
+        help="Run forever in background, logging to bot.log (use with nohup or screen)",
+    )
+    p.add_argument(
+        "--max-trades", type=int, default=None,
+        help="Cap how many trades to place per cycle (safety limit for live runs)",
+    )
     return p.parse_args()
 
 
@@ -385,10 +439,18 @@ if __name__ == "__main__":
         import time
         time.sleep(5)
 
-    use_mock = args.demo or not settings.anthropic_api_key
+    # Mock markets are ONLY for explicit --demo. Live and normal runs always
+    # scan REAL Polymarket markets. Without an Anthropic key the prediction
+    # agent falls back to XGBoost + rule-based (no LLM) — but on real markets.
+    use_mock = args.demo and not args.live
     if use_mock:
         # Lower confidence threshold for demo so we can see trade signals fire
         settings.min_confidence = 0.51
+    if args.live and not settings.anthropic_api_key:
+        console.print(
+            "[yellow]⚠  No ANTHROPIC_API_KEY — predictions use XGBoost + "
+            "rule-based only (no LLM layer). Scanning REAL markets.[/yellow]"
+        )
 
     if args.paper_blast:
         if args.live:
@@ -405,13 +467,58 @@ if __name__ == "__main__":
             border_style="yellow",
         ))
 
-    if args.run_once or args.demo or args.cycles > 1 or args.paper_blast:
+    if args.test_trade:
+        # One small REAL trade to verify the live order pipeline end-to-end.
+        # Relax the gates so something qualifies, and shrink the effective
+        # bankroll so Kelly sizes a tiny (~$1-2) bet — risk is trivial.
+        settings.min_confidence = 0.50
+        settings.min_edge = 0.01
+        settings.bankroll_usdc = 20.0      # 10% max-bet → ~$2 cap
+        settings.max_bet_fraction = 0.10
+        settings.max_time_to_resolution_days = 400   # allow long-dated US futures
+        args.top_n = max(args.top_n, 25)   # widen the net to find a candidate
+        console.print(Panel(
+            "[bold magenta]🧪 TEST TRADE MODE[/bold magenta]\n"
+            "Places ONE small (~$1-2) real trade to verify live execution.\n"
+            "This is a pipeline smoke test, NOT a strategy trade.\n"
+            f"[dim]min_confidence=0.50  effective bankroll=$20 → ~$2 max bet[/dim]",
+            border_style="magenta",
+        ))
+
+    if args.daemon:
+        # Redirect all logging to bot.log for background operation
+        file_handler = logging.FileHandler("bot.log")
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        logging.getLogger().addHandler(file_handler)
+        console.print(
+            "[bold green]🤖 Bot started in daemon mode[/bold green] — "
+            "logging to [cyan]bot.log[/cyan]\n"
+            "  Stop with: [dim]kill $(cat bot.pid)[/dim]\n"
+            f"  Exchange: [cyan]{settings.live_exchange}[/cyan] | "
+            f"Bankroll: [cyan]${settings.bankroll_usdc:,.0f}[/cyan] | "
+            f"Live: [{'red' if not dry_run else 'dim'}]{'YES' if not dry_run else 'NO (paper)'}[/{'red' if not dry_run else 'dim'}]"
+        )
+        import os
+        with open("bot.pid", "w") as f:
+            f.write(str(os.getpid()))
+
+    if args.test_trade:
+        _print_banner()
+        asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n,
+                                 use_mock=use_mock, max_trades=1))
+        _print_stats()
+    elif args.run_once or args.demo or args.cycles > 1 or args.paper_blast:
         _print_banner()
         cycles = args.cycles if not args.run_once else 1
         for i in range(cycles):
             if cycles > 1:
                 console.rule(f"[cyan]Cycle {i+1} / {cycles}[/cyan]")
-            asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n, use_mock=use_mock))
+            asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n,
+                                     use_mock=use_mock, max_trades=args.max_trades))
         _print_stats()
     else:
-        asyncio.run(main_loop(dry_run=dry_run, interval_seconds=args.interval))
+        asyncio.run(main_loop(dry_run=dry_run, interval_seconds=args.interval,
+                              max_trades=args.max_trades))

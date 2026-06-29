@@ -1,0 +1,60 @@
+name: Trading Bot
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # every 30 minutes, 24/7
+  workflow_dispatch:           # manual trigger from GitHub UI
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Restore trade database
+        uses: actions/cache@v4
+        with:
+          path: tradetestagent.db
+          key: trade-db-${{ github.run_number }}
+          restore-keys: |
+            trade-db-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Init database
+        run: python -c "from core.database import init_db; init_db()"
+
+      - name: Run one trading cycle
+        env:
+          POLYMARKET_KEY_ID: ${{ secrets.POLYMARKET_KEY_ID }}
+          POLYMARKET_SECRET_KEY: ${{ secrets.POLYMARKET_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          NOTIFY_FROM_EMAIL: ${{ secrets.NOTIFY_FROM_EMAIL }}
+          NOTIFY_SMTP_PASSWORD: ${{ secrets.NOTIFY_SMTP_PASSWORD }}
+          LIVE_EXCHANGE: polymarket_us
+          BANKROLL_USDC: "98.0"
+          AB_TESTING_ENABLED: "true"
+          NOTIFY_SMTP_HOST: smtp.gmail.com
+          NOTIFY_SMTP_PORT: "587"
+        run: python main.py --live --run-once --max-trades 3
+
+      - name: Retrain model on settled trades (continuous learning)
+        run: python main.py --retrain || echo "Not enough settled trades to retrain yet"
+
+      - name: Persist updated database
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: tradetestagent.db
+          key: trade-db-${{ github.run_number }}

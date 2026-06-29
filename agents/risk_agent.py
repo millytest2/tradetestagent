@@ -83,6 +83,11 @@ def _check_rolling_circuit_breaker() -> None:
             with open(CIRCUIT_BREAKER_FILE, "w") as f:
                 f.write(msg)
             logger.critical("CIRCUIT BREAKER TRIGGERED: %s", msg)
+            try:
+                from utils.notifications import notify_circuit_breaker
+                notify_circuit_breaker(win_rate=rate, window=CIRCUIT_BREAKER_WINDOW)
+            except Exception:
+                pass
             raise RuntimeError(f"TRADING PAUSED — {msg}")
 
     except RuntimeError:
@@ -304,17 +309,31 @@ async def evaluate_and_trade(
 
     try:
         # ── Exchange routing ───────────────────────────────────────────────────
+        # Markets carry their source. Kalshi tickers are uppercase alnum
+        # (e.g. "KXBTCD-25"); Polymarket condition_ids are 0x-prefixed hashes.
         exchange = settings.live_exchange.lower()
-        if exchange == "kalshi" or (exchange == "both" and market.condition_id.startswith("KXBTC") or True):
-            # Route to Kalshi for US users
+        market_is_kalshi = not market.condition_id.startswith("0x")
+
+        if exchange == "kalshi" or (exchange == "both" and market_is_kalshi):
+            # Route to Kalshi (US-legal)
             from integrations.kalshi import place_trade as kalshi_place
-            # Try to find matching Kalshi market, fall back to Polymarket data
             trade = await kalshi_place(
                 condition_id=market.condition_id,
                 side=prediction.side,
                 bet_usdc=sizing.bet_usdc,
                 price=market_price,
                 dry_run=dry_run,
+            )
+        elif exchange in ("polymarket_us", "polymarketus", "pmus"):
+            # Route to Polymarket US (CFTC-regulated, US-legal — api.polymarket.us)
+            from integrations.polymarket_us import place_trade as pmus_place
+            trade = await pmus_place(
+                condition_id=market.condition_id,
+                side=prediction.side,
+                bet_usdc=sizing.bet_usdc,
+                price=market_price,
+                dry_run=dry_run,
+                slug=market.slug,
             )
         else:
             from integrations.polymarket import place_trade as poly_place
@@ -353,6 +372,20 @@ async def evaluate_and_trade(
         trade.id = trade_id
         logger.info("Trade placed — id=%d variant=%s exchange=%s tx=%s",
                     trade_id, ab_variant, exchange, trade.tx_hash)
+
+        # Email alert for the placed trade
+        try:
+            from utils.notifications import notify_trade_placed
+            notify_trade_placed(
+                question=market.question,
+                side=prediction.side.value,
+                bet_usdc=sizing.bet_usdc,
+                price=market_price,
+                edge=prediction.edge,
+                bankroll=bankroll,
+            )
+        except Exception:
+            pass
 
         return TradeDecision(approved=True, prediction=prediction, sizing=sizing)
 

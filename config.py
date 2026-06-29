@@ -13,6 +13,12 @@ class Settings(BaseSettings):
     polymarket_api_key: str = ""
     polymarket_api_secret: str = ""
     polymarket_api_passphrase: str = ""
+    polymarket_signature_type: int = 1   # 1=Privy/email embedded wallet, 0=MetaMask EOA
+
+    # Polymarket US (CFTC-regulated, US-legal API — api.polymarket.us)
+    # Generate at polymarket.us/developer after KYC. Ed25519 auth.
+    polymarket_key_id: str = ""          # Key ID (UUID)
+    polymarket_secret_key: str = ""      # Base64-encoded Ed25519 private key
 
     # Kalshi (US-legal, CFTC-regulated — for live trading from US)
     # Auth uses RSA-PSS: generate key pair at kalshi.com → Settings → API
@@ -40,7 +46,7 @@ class Settings(BaseSettings):
     max_bet_fraction: float = Field(default=0.10, ge=0.001, le=0.5)
     min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
-    max_time_to_resolution_days: int = Field(default=30, ge=1)
+    max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out
     min_time_to_resolution_days: int = Field(default=1, ge=0)
 
     # ── Infrastructure ────────────────────────────────────────────────────────
@@ -62,6 +68,14 @@ class Settings(BaseSettings):
 
     # ── A/B testing ───────────────────────────────────────────────────────────
     ab_testing_enabled: bool = True
+
+    # ── Email notifications ───────────────────────────────────────────────────
+    # Gmail: myaccount.google.com → Security → App Passwords → generate one
+    notify_email: str = ""              # destination address (your inbox)
+    notify_from_email: str = ""         # sending address (gmail account)
+    notify_smtp_password: str = ""      # Gmail App Password (16-char)
+    notify_smtp_host: str = "smtp.gmail.com"
+    notify_smtp_port: int = 587
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

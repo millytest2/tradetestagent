@@ -1,0 +1,255 @@
+"""
+Polymarket US integration — the CFTC-regulated, US-legal API.
+
+This is the endpoint that WORKS for US users (api.polymarket.us), launched
+Feb 2026. Unlike the international CLOB (clob.polymarket.com) which geoblocks
+US orders with a 403, this one is built for US residents.
+
+Setup (one time):
+  1. Open the Polymarket app, finish KYC (you already did this to deposit)
+  2. Go to polymarket.us/developer → generate API keys
+  3. You get a KEY ID (uuid) and a SECRET KEY (base64 Ed25519 private key)
+  4. Put them in .env:
+       POLYMARKET_KEY_ID=...
+       POLYMARKET_SECRET_KEY=...
+
+Market data (scan/research) still comes from the Gamma API (read-only, never
+geoblocked). Only ORDER EXECUTION routes through here.
+
+Docs: https://docs.polymarket.us   SDK: pip install polymarket-us
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+
+from config import settings
+from core.models import MarketSide, Trade, TradeStatus
+
+logger = logging.getLogger(__name__)
+
+
+def _client():
+    """Build an authenticated Polymarket US SDK client."""
+    from polymarket_us import PolymarketUS
+
+    # Accept either the dedicated US field names OR the generic Polymarket
+    # API creds (same UUID key + base64 secret work for both).
+    key_id = settings.polymarket_key_id or settings.polymarket_api_key
+    secret_key = settings.polymarket_secret_key or settings.polymarket_api_secret
+    if not key_id or not secret_key:
+        raise ValueError(
+            "No Polymarket US credentials. Set POLYMARKET_KEY_ID + "
+            "POLYMARKET_SECRET_KEY (or POLYMARKET_API_KEY + POLYMARKET_API_SECRET) "
+            "in .env. Generate them at polymarket.us/developer."
+        )
+    return PolymarketUS(key_id=key_id, secret_key=secret_key)
+
+
+def _public_client():
+    """Read-only client (no auth needed for market data)."""
+    from polymarket_us import PolymarketUS
+    return PolymarketUS()
+
+
+def _parse_us_market(raw: dict):
+    """Parse a Polymarket US market dict into our Market model."""
+    import json as _json
+    from datetime import datetime, timezone
+    from core.models import Market
+
+    try:
+        slug = raw.get("slug") or ""
+        if not slug:
+            return None
+
+        outcomes = raw.get("outcomes")
+        prices = raw.get("outcomePrices")
+        if isinstance(outcomes, str):
+            try: outcomes = _json.loads(outcomes)
+            except Exception: outcomes = []
+        if isinstance(prices, str):
+            try: prices = _json.loads(prices)
+            except Exception: prices = []
+        outcomes = outcomes or []
+        prices = prices or []
+
+        # Two-outcome market → treat outcome[0] as "YES", outcome[1] as "NO"
+        yes_price = float(prices[0]) if len(prices) >= 1 else 0.5
+        no_price  = float(prices[1]) if len(prices) >= 2 else (1.0 - yes_price)
+
+        end_date = raw.get("endDate") or ""
+        days_left = 999.0
+        if end_date:
+            try:
+                dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                days_left = (dt - datetime.now(timezone.utc)).total_seconds() / 86400
+            except Exception:
+                pass
+
+        # Build a readable question that includes the outcome labels
+        question = raw.get("question") or slug
+        if len(outcomes) >= 2:
+            question = f"{question} — {outcomes[0]} (YES) vs {outcomes[1]} (NO)"
+
+        return Market(
+            condition_id=slug,                       # slug doubles as id for US
+            slug=slug,
+            question=question,
+            description=raw.get("description", "")[:500],
+            end_date_iso=end_date,
+            liquidity_usdc=float(raw.get("liquidity", 0) or 5000),  # US API may omit
+            volume_24h_usdc=float(raw.get("volume24hr", raw.get("volume", 0)) or 1000),
+            yes_price=max(0.01, min(0.99, yes_price)),
+            no_price=max(0.01, min(0.99, no_price)),
+            spread=abs(no_price - (1.0 - yes_price)),
+            price_change_24h=0.0,
+            time_to_resolution_days=max(0.0, days_left),
+            tags=[raw.get("category", "polymarket_us")],
+            yes_token_id="",
+            no_token_id="",
+        )
+    except Exception as e:
+        logger.debug("Failed to parse US market %s: %s", raw.get("slug"), e)
+        return None
+
+
+PMUS_GATEWAY = "https://gateway.polymarket.us/v1/markets"
+
+
+async def get_active_markets(limit: int = 200):
+    """
+    Fetch OPEN Polymarket US markets via the public gateway.
+
+    The `closed=false` filter is REQUIRED — without it the API returns
+    resolved markets (closed does NOT default to false in practice).
+    Paginates to gather a wide pool of open markets.
+    """
+    import httpx
+
+    raw_markets = []
+    try:
+        async with httpx.AsyncClient(timeout=25) as client:
+            offset = 0
+            while len(raw_markets) < 1000:
+                resp = await client.get(
+                    PMUS_GATEWAY,
+                    params={"closed": "false", "limit": 100, "offset": offset},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                page = data.get("markets", []) if isinstance(data, dict) else []
+                if not page:
+                    break
+                raw_markets.extend(page)
+                if len(page) < 100:
+                    break
+                offset += 100
+    except Exception as e:
+        logger.error("Polymarket US market list failed: %s", e)
+        return []
+
+    markets = []
+    for raw in raw_markets:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("closed") or raw.get("archived"):
+            continue
+        m = _parse_us_market(raw)
+        if m:
+            markets.append(m)
+
+    logger.info("Fetched %d open Polymarket US markets", len(markets))
+    return markets
+
+
+async def get_balance() -> float:
+    """Return USD balance on the Polymarket US account."""
+    try:
+        client = _client()
+        # Balance lives under the account/portfolio resource in the SDK
+        bal = client.account.balance()
+        client.close()
+        return float(getattr(bal, "available", None) or bal.get("available", 0))
+    except Exception as e:
+        logger.warning("Polymarket US balance fetch failed: %s", e)
+        return settings.bankroll_usdc
+
+
+async def place_trade(
+    condition_id: str,
+    side: MarketSide,
+    bet_usdc: float,
+    price: float,
+    dry_run: bool = True,
+    slug: str = "",
+) -> Trade:
+    """
+    Place a limit order on Polymarket US via the official SDK.
+
+    The US API is slug-based (not condition_id), so `slug` must be provided —
+    the risk agent passes market.slug through.
+    """
+    if not slug:
+        raise ValueError(
+            f"Polymarket US needs a market slug (condition_id={condition_id}). "
+            "Market.slug was empty — check the Gamma scan parsed it."
+        )
+
+    # Buy the side we believe in. The US API expresses direction via intent.
+    intent = "ORDER_INTENT_BUY_LONG" if side == MarketSide.YES else "ORDER_INTENT_BUY_SHORT"
+    # contracts: each ~$1 max payout; quantity = dollars / price
+    quantity = max(1, int(bet_usdc / max(price, 0.01)))
+    price_str = f"{max(0.01, min(0.99, price)):.2f}"
+    client_oid = str(uuid.uuid4())
+
+    if dry_run:
+        logger.info(
+            "[DRY RUN] Polymarket US: %s %s | %d @ $%s (~$%.2f)",
+            intent, slug, quantity, price_str, bet_usdc,
+        )
+        return Trade(
+            market_id=condition_id,
+            question=slug,
+            side=side,
+            entry_price=price,
+            bet_usdc=bet_usdc,
+            shares=float(quantity),
+            status=TradeStatus.PLACED,
+            tx_hash=f"pmus_dry_{client_oid[:12]}",
+        )
+
+    try:
+        client = _client()
+        order = client.orders.create({
+            "marketSlug": slug,
+            "intent": intent,
+            "type": "ORDER_TYPE_LIMIT",
+            "price": {"value": price_str, "currency": "USD"},
+            "quantity": quantity,
+            "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+        })
+        order_id = (
+            getattr(order, "id", None)
+            or (order.get("id") if isinstance(order, dict) else None)
+            or client_oid
+        )
+        client.close()
+        logger.info(
+            "Polymarket US order placed: %s %s %d @ $%s — id=%s",
+            intent, slug, quantity, price_str, order_id,
+        )
+        return Trade(
+            market_id=condition_id,
+            question=slug,
+            side=side,
+            entry_price=price,
+            bet_usdc=bet_usdc,
+            shares=float(quantity),
+            status=TradeStatus.PLACED,
+            tx_hash=str(order_id),
+        )
+    except Exception as e:
+        logger.error("Polymarket US order failed: %s", e)
+        raise
