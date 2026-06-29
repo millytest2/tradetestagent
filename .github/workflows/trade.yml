@@ -49,3 +49,13 @@ jobs:
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
         run: python main.py --live --run-once
+
+      - name: Retrain model on settled trades (continuous learning)
+        run: python main.py --retrain || echo "Not enough settled trades to retrain yet"
+
+      - name: Persist updated database
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: tradetestagent.db
+          key: trade-db-${{ github.run_number }}
