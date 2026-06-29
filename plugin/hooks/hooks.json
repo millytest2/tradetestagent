@@ -1,0 +1,5 @@
+{
+  "$schema": "https://code.claude.com/schemas/hooks.json",
+  "description": "Claude Flow hooks configuration",
+  "hooks": {}
+}
