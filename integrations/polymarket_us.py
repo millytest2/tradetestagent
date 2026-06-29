@@ -115,35 +115,46 @@ def _parse_us_market(raw: dict):
         return None
 
 
+PMUS_GATEWAY = "https://gateway.polymarket.us/v1/markets"
+
+
 async def get_active_markets(limit: int = 200):
-    """Fetch OPEN Polymarket US markets (native slugs, tradeable)."""
-    client = _public_client()
+    """
+    Fetch OPEN Polymarket US markets via the public gateway.
+
+    The `closed=false` filter is REQUIRED — without it the API returns
+    resolved markets (closed does NOT default to false in practice).
+    Paginates to gather a wide pool of open markets.
+    """
+    import httpx
+
     raw_markets = []
-    # Try common filter params; fall back to a bare list + client-side filter.
-    for kwargs in ({"active": True, "closed": False, "limit": 500},
-                   {"limit": 500},
-                   {}):
-        try:
-            resp = client.markets.list(**kwargs)
-            raw_markets = resp.get("markets", []) if isinstance(resp, dict) else list(resp)
-            if raw_markets:
-                break
-        except TypeError:
-            continue
-        except Exception as e:
-            logger.warning("Polymarket US market list failed (%s): %s", kwargs, e)
-            continue
     try:
-        client.close()
-    except Exception:
-        pass
+        async with httpx.AsyncClient(timeout=25) as client:
+            offset = 0
+            while len(raw_markets) < 1000:
+                resp = await client.get(
+                    PMUS_GATEWAY,
+                    params={"closed": "false", "limit": 100, "offset": offset},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                page = data.get("markets", []) if isinstance(data, dict) else []
+                if not page:
+                    break
+                raw_markets.extend(page)
+                if len(page) < 100:
+                    break
+                offset += 100
+    except Exception as e:
+        logger.error("Polymarket US market list failed: %s", e)
+        return []
 
     markets = []
     for raw in raw_markets:
         if not isinstance(raw, dict):
             continue
-        # Only OPEN, tradeable markets
-        if raw.get("closed") or raw.get("archived") or raw.get("active") is False:
+        if raw.get("closed") or raw.get("archived"):
             continue
         m = _parse_us_market(raw)
         if m:

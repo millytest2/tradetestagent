@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     max_bet_fraction: float = Field(default=0.10, ge=0.001, le=0.5)
     min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
-    max_time_to_resolution_days: int = Field(default=30, ge=1)
+    max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out
     min_time_to_resolution_days: int = Field(default=1, ge=0)
 
     # ── Infrastructure ────────────────────────────────────────────────────────

@@ -471,6 +471,7 @@ if __name__ == "__main__":
         settings.min_edge = 0.01
         settings.bankroll_usdc = 20.0      # 10% max-bet → ~$2 cap
         settings.max_bet_fraction = 0.10
+        settings.max_time_to_resolution_days = 400   # allow long-dated US futures
         args.top_n = max(args.top_n, 25)   # widen the net to find a candidate
         console.print(Panel(
             "[bold magenta]🧪 TEST TRADE MODE[/bold magenta]\n"
