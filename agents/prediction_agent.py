@@ -122,7 +122,10 @@ TASK:
 4. State your confidence level (0.0–1.0) in this estimate.
 5. Recommend YES, NO, or PASS.
 
-Respond in this exact JSON format:
+CRITICAL: Respond with ONLY the JSON object below. Do NOT write any analysis,
+preamble, or explanation before the JSON. Start your response with {{ immediately.
+Put all your reasoning inside the "reasoning" field.
+
 {{
   "llm_yes_probability": <float 0.0-1.0>,
   "confidence": <float 0.0-1.0>,
@@ -217,10 +220,16 @@ async def predict_market(
         )
     else:
         try:
+            # Prefill the assistant turn with "{" to force JSON-only output —
+            # prevents the model from preambling with prose and running out of
+            # tokens before it writes the JSON (which defaults conf to 0.50).
             response = _client.messages.create(
                 model=settings.llm_model,
-                max_tokens=512,
-                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+                messages=[
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "{"},
+                ],
             )
 
             text_content = next(
@@ -228,7 +237,8 @@ async def predict_market(
             )
             if not text_content:
                 raise ValueError("LLM returned no text block")
-            parsed = _parse_llm_response(text_content)
+            # Re-attach the prefilled "{" so the parser sees a complete object
+            parsed = _parse_llm_response("{" + text_content)
 
             if parsed:
                 llm_prob = float(parsed.get("llm_yes_probability", xgb_prob))
