@@ -40,23 +40,69 @@ async def fetch_markets(limit: int = 300, offset: int = 0) -> list[dict]:
 def _parse_market(raw: dict) -> Optional[Market]:
     """Parse a raw Gamma API market response into a Market model."""
     try:
-        # Extract prices from tokens (YES/NO)
-        tokens = raw.get("tokens", [])
+        import json as _json
         yes_price = 0.5
         no_price = 0.5
         yes_token_id = ""
         no_token_id = ""
 
-        for token in tokens:
-            outcome = token.get("outcome", "").upper()
-            price = float(token.get("price", 0.5))
-            token_id = token.get("token_id") or token.get("id") or ""
-            if outcome == "YES":
-                yes_price = price
-                yes_token_id = str(token_id)
-            elif outcome == "NO":
-                no_price = price
-                no_token_id = str(token_id)
+        def _maybe_json(v):
+            """Gamma encodes arrays as JSON strings, e.g. '["Yes","No"]'."""
+            if isinstance(v, str):
+                try:
+                    return _json.loads(v)
+                except Exception:
+                    return None
+            return v
+
+        # ── Format A: Gamma API (outcomes / outcomePrices / clobTokenIds) ──────
+        outcomes_list = _maybe_json(raw.get("outcomes")) or []
+        prices_list   = _maybe_json(raw.get("outcomePrices")) or []
+        clob_ids      = _maybe_json(raw.get("clobTokenIds")) or []
+
+        if outcomes_list and clob_ids:
+            for i, oc in enumerate(outcomes_list):
+                ocu = str(oc).strip().upper()
+                if ocu == "YES":
+                    if i < len(prices_list):
+                        yes_price = float(prices_list[i])
+                    if i < len(clob_ids):
+                        yes_token_id = str(clob_ids[i])
+                elif ocu == "NO":
+                    if i < len(prices_list):
+                        no_price = float(prices_list[i])
+                    if i < len(clob_ids):
+                        no_token_id = str(clob_ids[i])
+            # Positional fallback when outcomes aren't literally "Yes"/"No"
+            if not yes_token_id and len(clob_ids) >= 1:
+                yes_token_id = str(clob_ids[0])
+            if not no_token_id and len(clob_ids) >= 2:
+                no_token_id = str(clob_ids[1])
+            if yes_price == 0.5 and len(prices_list) >= 1:
+                try: yes_price = float(prices_list[0])
+                except Exception: pass
+            if no_price == 0.5 and len(prices_list) >= 2:
+                try: no_price = float(prices_list[1])
+                except Exception: pass
+        else:
+            # ── Format B: CLOB tokens array (legacy) ──────────────────────────
+            tokens = raw.get("tokens", [])
+            for token in tokens:
+                outcome = token.get("outcome", "").upper()
+                price = float(token.get("price", 0.5))
+                token_id = token.get("token_id") or token.get("id") or ""
+                if outcome == "YES":
+                    yes_price = price
+                    yes_token_id = str(token_id)
+                elif outcome == "NO":
+                    no_price = price
+                    no_token_id = str(token_id)
+
+        # Derive the complementary price if only one side was found
+        if no_price == 0.5 and yes_price != 0.5:
+            no_price = 1.0 - yes_price
+        elif yes_price == 0.5 and no_price != 0.5:
+            yes_price = 1.0 - no_price
 
         # Resolve end date
         end_date = raw.get("endDate") or raw.get("endDateIso") or ""

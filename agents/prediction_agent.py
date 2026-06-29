@@ -220,16 +220,14 @@ async def predict_market(
         )
     else:
         try:
-            # Prefill the assistant turn with "{" to force JSON-only output —
-            # prevents the model from preambling with prose and running out of
-            # tokens before it writes the JSON (which defaults conf to 0.50).
+            # max_tokens=1024 (not 512) so the model never runs out of room
+            # before emitting the JSON. Strong "JSON only" instruction in the
+            # prompt keeps preamble out. (No assistant prefill — sonnet-4-6
+            # rejects it with a 400.)
             response = _client.messages.create(
                 model=settings.llm_model,
                 max_tokens=1024,
-                messages=[
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": "{"},
-                ],
+                messages=[{"role": "user", "content": prompt}],
             )
 
             text_content = next(
@@ -237,8 +235,7 @@ async def predict_market(
             )
             if not text_content:
                 raise ValueError("LLM returned no text block")
-            # Re-attach the prefilled "{" so the parser sees a complete object
-            parsed = _parse_llm_response("{" + text_content)
+            parsed = _parse_llm_response(text_content)
 
             if parsed:
                 llm_prob = float(parsed.get("llm_yes_probability", xgb_prob))
