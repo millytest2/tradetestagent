@@ -21,9 +21,9 @@ jobs:
           cache: 'pip'
 
       - name: Restore trade database
-        uses: actions/cache@v4
-        with:
-          path: tradetestagent.db
+        uses: actions/cache/restore@v4   # restore-only: no auto-save, avoids
+        with:                            # the duplicate-key collision with the
+          path: tradetestagent.db        # explicit Persist step below
           key: trade-db-${{ github.run_number }}
           restore-keys: |
             trade-db-
