@@ -100,8 +100,13 @@ def _print_stats() -> None:
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 
-async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = False) -> None:
-    """Execute one full scan→research→predict→risk cycle."""
+async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = False,
+                       max_trades: int = None) -> None:
+    """Execute one full scan→research→predict→risk cycle.
+
+    max_trades: if set, stop after this many trades are placed (used by
+    --test-trade to place exactly one small verification trade).
+    """
 
     cycle_start = datetime.utcnow()
     console.rule(f"[cyan]Cycle started {cycle_start.strftime('%H:%M:%S UTC')}[/cyan]")
@@ -203,6 +208,12 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 f"odds={sz.odds:.2f}x)"
             )
             trades_placed += 1
+            if max_trades and trades_placed >= max_trades:
+                console.print(
+                    f"    [yellow]→ Reached max_trades={max_trades} — "
+                    f"stopping after this trade[/yellow]"
+                )
+                break
         else:
             console.print(
                 f"    [red]✗ Blocked:[/red] {decision.rejection_reason}"
@@ -382,6 +393,11 @@ def parse_args() -> argparse.Namespace:
         help="Relaxed thresholds for fast paper trade accumulation (min_confidence=0.60, top-n=20)",
     )
     p.add_argument(
+        "--test-trade", action="store_true",
+        help="Place exactly ONE small (~$1-2) real trade to verify the live "
+             "order pipeline works end-to-end. Use with --live.",
+    )
+    p.add_argument(
         "--daemon", action="store_true",
         help="Run forever in background, logging to bot.log (use with nohup or screen)",
     )
@@ -447,6 +463,23 @@ if __name__ == "__main__":
             border_style="yellow",
         ))
 
+    if args.test_trade:
+        # One small REAL trade to verify the live order pipeline end-to-end.
+        # Relax the gates so something qualifies, and shrink the effective
+        # bankroll so Kelly sizes a tiny (~$1-2) bet — risk is trivial.
+        settings.min_confidence = 0.50
+        settings.min_edge = 0.01
+        settings.bankroll_usdc = 20.0      # 10% max-bet → ~$2 cap
+        settings.max_bet_fraction = 0.10
+        args.top_n = max(args.top_n, 25)   # widen the net to find a candidate
+        console.print(Panel(
+            "[bold magenta]🧪 TEST TRADE MODE[/bold magenta]\n"
+            "Places ONE small (~$1-2) real trade to verify live execution.\n"
+            "This is a pipeline smoke test, NOT a strategy trade.\n"
+            f"[dim]min_confidence=0.50  effective bankroll=$20 → ~$2 max bet[/dim]",
+            border_style="magenta",
+        ))
+
     if args.daemon:
         # Redirect all logging to bot.log for background operation
         file_handler = logging.FileHandler("bot.log")
@@ -467,7 +500,12 @@ if __name__ == "__main__":
         with open("bot.pid", "w") as f:
             f.write(str(os.getpid()))
 
-    if args.run_once or args.demo or args.cycles > 1 or args.paper_blast:
+    if args.test_trade:
+        _print_banner()
+        asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n,
+                                 use_mock=use_mock, max_trades=1))
+        _print_stats()
+    elif args.run_once or args.demo or args.cycles > 1 or args.paper_blast:
         _print_banner()
         cycles = args.cycles if not args.run_once else 1
         for i in range(cycles):
