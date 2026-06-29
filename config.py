@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     bankroll_usdc: float = Field(default=1000.0, ge=1.0)
     kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
     min_edge: float = Field(default=0.05, ge=0.0, le=1.0)
+    fee_buffer: float = Field(default=0.03, ge=0.0, le=0.5)  # extra edge required to clear exchange fees
     min_confidence: float = Field(default=0.65, ge=0.5, le=1.0)
     max_bet_fraction: float = Field(default=0.10, ge=0.001, le=0.5)
     min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)

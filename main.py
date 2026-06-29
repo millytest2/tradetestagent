@@ -111,6 +111,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     cycle_start = datetime.utcnow()
     console.rule(f"[cyan]Cycle started {cycle_start.strftime('%H:%M:%S UTC')}[/cyan]")
 
+    # ── Step 0: Settle any resolved positions (closes the learning loop) ───────
+    if not use_mock:
+        try:
+            settled = await _settle_pending_trades()
+            if settled:
+                console.print(f"  [green]✓ Settled {settled} resolved position(s)[/green]")
+        except Exception as e:
+            logger.debug("Settlement sweep failed (non-blocking): %s", e)
+
     # ── Step 1: Scan ──────────────────────────────────────────────────────────
     console.print("[bold]Step 1[/bold] Scanning markets...")
 
@@ -167,6 +176,17 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     console.print("[bold]Step 3+4[/bold] Predicting and evaluating risk...")
     trades_placed = 0
 
+    # Size bets off the REAL account balance, not a hardcoded number, so the bot
+    # bets correctly as the bankroll grows or shrinks.
+    live_bankroll = None
+    if not use_mock and settings.live_exchange.lower() in ("polymarket_us", "polymarketus", "pmus"):
+        try:
+            from integrations.polymarket_us import get_balance
+            live_bankroll = await get_balance()
+            console.print(f"  [dim]Live balance: ${live_bankroll:.2f}[/dim]")
+        except Exception as e:
+            logger.debug("Balance fetch failed, using configured bankroll: %s", e)
+
     for flagged_market, report in zip(top_flagged, reports):
         question = flagged_market.market.question
         console.print(f"  → [dim]{question[:70]}[/dim]")
@@ -194,9 +214,9 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             f"| conf={prediction.confidence:.2f}"
         )
 
-        # Step 4: Risk + Execution
+        # Step 4: Risk + Execution (sized off real balance when available)
         decision = await evaluate_and_trade(
-            flagged_market, prediction, dry_run=dry_run
+            flagged_market, prediction, bankroll_usdc=live_bankroll, dry_run=dry_run
         )
 
         if decision.approved:
@@ -235,6 +255,42 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
 
     # ── Step 5: Postmortems for any settled losses ────────────────────────────
     await _run_pending_postmortems()
+
+
+async def _settle_pending_trades() -> int:
+    """
+    Check every PENDING trade against the exchange and mark WIN/LOSS when its
+    market has resolved. WITHOUT this, trades sit PENDING forever and the bot
+    never learns from real outcomes. Returns how many settled this pass.
+    """
+    from core.database import SessionLocal, TradeRow, update_trade_outcome
+    from core.models import TradeOutcome
+
+    exchange = settings.live_exchange.lower()
+    if exchange not in ("polymarket_us", "polymarketus", "pmus"):
+        return 0  # settlement checkers for other exchanges live in their modules
+    from integrations.polymarket_us import check_settlement
+
+    with SessionLocal() as s:
+        pending = [
+            (r.id, r.market_id, r.side, r.shares, r.bet_usdc)
+            for r in s.query(TradeRow).filter(TradeRow.outcome == "PENDING").all()
+        ]
+
+    settled = 0
+    for tid, slug, side, shares, bet in pending:
+        try:
+            result = await check_settlement(slug)
+        except Exception:
+            result = None
+        if not result:
+            continue
+        won = (result == "yes" and side == "YES") or (result == "no" and side == "NO")
+        outcome = TradeOutcome.WIN if won else TradeOutcome.LOSS
+        pnl = (shares - bet) if won else -bet
+        update_trade_outcome(tid, outcome, pnl)
+        settled += 1
+    return settled
 
 
 async def _run_pending_postmortems() -> None:

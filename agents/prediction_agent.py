@@ -309,14 +309,18 @@ async def predict_market(
         return None
 
     # ── Determine side and edge ────────────────────────────────────────────────
+    # Require the edge to clear BOTH the minimum edge AND the exchange fee, so
+    # we don't take trades whose edge is eaten by fees (Polymarket US markets
+    # carry a fee coefficient ~0.05). edge_floor protects against bleeding.
+    edge_floor = settings.min_edge + settings.fee_buffer
     yes_edge = calibrated - market.yes_price
     no_edge = (1 - calibrated) - market.no_price
 
-    if yes_edge >= no_edge and yes_edge >= settings.min_edge:
+    if yes_edge >= no_edge and yes_edge >= edge_floor:
         side = MarketSide.YES
         edge = yes_edge
         market_price = market.yes_price
-    elif no_edge > yes_edge and no_edge >= settings.min_edge:
+    elif no_edge > yes_edge and no_edge >= edge_floor:
         side = MarketSide.NO
         edge = no_edge
         market_price = market.no_price

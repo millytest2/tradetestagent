@@ -231,6 +231,42 @@ async def get_whale_signal(market, threshold_usd: float = 1500.0) -> float:
         return 0.0
 
 
+async def check_settlement(slug: str):
+    """
+    Check if a Polymarket US market has resolved.
+    Returns 'yes' if outcome[0] (our YES) won, 'no' if outcome[1] (NO) won,
+    or None if still open / unknown. Resolved markets report outcomePrices
+    like ["1","0"] (YES won) or ["0","1"] (NO won).
+    """
+    import httpx, json as _json
+    if not slug:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"https://gateway.polymarket.us/v1/markets/{slug}")
+            if r.status_code != 200:
+                return None
+            data = r.json()
+        m = data.get("market") if isinstance(data, dict) and "market" in data else data
+        if not isinstance(m, dict):
+            return None
+        if not (m.get("closed") or m.get("archived")):
+            return None
+        prices = m.get("outcomePrices")
+        if isinstance(prices, str):
+            prices = _json.loads(prices)
+        if not prices or len(prices) < 2:
+            return None
+        if float(prices[0]) >= 0.99:
+            return "yes"
+        if float(prices[1]) >= 0.99:
+            return "no"
+        return None
+    except Exception as e:
+        logger.debug("PM-US settlement check failed for %s: %s", slug, e)
+        return None
+
+
 async def get_balance() -> float:
     """Return USD balance on the Polymarket US account."""
     try:
