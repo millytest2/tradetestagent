@@ -47,6 +47,112 @@ def _client():
     return PolymarketUS(key_id=key_id, secret_key=secret_key)
 
 
+def _public_client():
+    """Read-only client (no auth needed for market data)."""
+    from polymarket_us import PolymarketUS
+    return PolymarketUS()
+
+
+def _parse_us_market(raw: dict):
+    """Parse a Polymarket US market dict into our Market model."""
+    import json as _json
+    from datetime import datetime, timezone
+    from core.models import Market
+
+    try:
+        slug = raw.get("slug") or ""
+        if not slug:
+            return None
+
+        outcomes = raw.get("outcomes")
+        prices = raw.get("outcomePrices")
+        if isinstance(outcomes, str):
+            try: outcomes = _json.loads(outcomes)
+            except Exception: outcomes = []
+        if isinstance(prices, str):
+            try: prices = _json.loads(prices)
+            except Exception: prices = []
+        outcomes = outcomes or []
+        prices = prices or []
+
+        # Two-outcome market → treat outcome[0] as "YES", outcome[1] as "NO"
+        yes_price = float(prices[0]) if len(prices) >= 1 else 0.5
+        no_price  = float(prices[1]) if len(prices) >= 2 else (1.0 - yes_price)
+
+        end_date = raw.get("endDate") or ""
+        days_left = 999.0
+        if end_date:
+            try:
+                dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                days_left = (dt - datetime.now(timezone.utc)).total_seconds() / 86400
+            except Exception:
+                pass
+
+        # Build a readable question that includes the outcome labels
+        question = raw.get("question") or slug
+        if len(outcomes) >= 2:
+            question = f"{question} — {outcomes[0]} (YES) vs {outcomes[1]} (NO)"
+
+        return Market(
+            condition_id=slug,                       # slug doubles as id for US
+            slug=slug,
+            question=question,
+            description=raw.get("description", "")[:500],
+            end_date_iso=end_date,
+            liquidity_usdc=float(raw.get("liquidity", 0) or 5000),  # US API may omit
+            volume_24h_usdc=float(raw.get("volume24hr", raw.get("volume", 0)) or 1000),
+            yes_price=max(0.01, min(0.99, yes_price)),
+            no_price=max(0.01, min(0.99, no_price)),
+            spread=abs(no_price - (1.0 - yes_price)),
+            price_change_24h=0.0,
+            time_to_resolution_days=max(0.0, days_left),
+            tags=[raw.get("category", "polymarket_us")],
+            yes_token_id="",
+            no_token_id="",
+        )
+    except Exception as e:
+        logger.debug("Failed to parse US market %s: %s", raw.get("slug"), e)
+        return None
+
+
+async def get_active_markets(limit: int = 200):
+    """Fetch OPEN Polymarket US markets (native slugs, tradeable)."""
+    client = _public_client()
+    raw_markets = []
+    # Try common filter params; fall back to a bare list + client-side filter.
+    for kwargs in ({"active": True, "closed": False, "limit": 500},
+                   {"limit": 500},
+                   {}):
+        try:
+            resp = client.markets.list(**kwargs)
+            raw_markets = resp.get("markets", []) if isinstance(resp, dict) else list(resp)
+            if raw_markets:
+                break
+        except TypeError:
+            continue
+        except Exception as e:
+            logger.warning("Polymarket US market list failed (%s): %s", kwargs, e)
+            continue
+    try:
+        client.close()
+    except Exception:
+        pass
+
+    markets = []
+    for raw in raw_markets:
+        if not isinstance(raw, dict):
+            continue
+        # Only OPEN, tradeable markets
+        if raw.get("closed") or raw.get("archived") or raw.get("active") is False:
+            continue
+        m = _parse_us_market(raw)
+        if m:
+            markets.append(m)
+
+    logger.info("Fetched %d open Polymarket US markets", len(markets))
+    return markets
+
+
 async def get_balance() -> float:
     """Return USD balance on the Polymarket US account."""
     try:
