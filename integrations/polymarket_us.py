@@ -34,12 +34,15 @@ def _client():
     """Build an authenticated Polymarket US SDK client."""
     from polymarket_us import PolymarketUS
 
-    key_id = settings.polymarket_key_id
-    secret_key = settings.polymarket_secret_key
+    # Accept either the dedicated US field names OR the generic Polymarket
+    # API creds (same UUID key + base64 secret work for both).
+    key_id = settings.polymarket_key_id or settings.polymarket_api_key
+    secret_key = settings.polymarket_secret_key or settings.polymarket_api_secret
     if not key_id or not secret_key:
         raise ValueError(
-            "POLYMARKET_KEY_ID / POLYMARKET_SECRET_KEY not set. "
-            "Generate them at polymarket.us/developer and add to .env"
+            "No Polymarket US credentials. Set POLYMARKET_KEY_ID + "
+            "POLYMARKET_SECRET_KEY (or POLYMARKET_API_KEY + POLYMARKET_API_SECRET) "
+            "in .env. Generate them at polymarket.us/developer."
         )
     return PolymarketUS(key_id=key_id, secret_key=secret_key)
 
