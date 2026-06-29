@@ -309,11 +309,14 @@ async def evaluate_and_trade(
 
     try:
         # ── Exchange routing ───────────────────────────────────────────────────
+        # Markets carry their source. Kalshi tickers are uppercase alnum
+        # (e.g. "KXBTCD-25"); Polymarket condition_ids are 0x-prefixed hashes.
         exchange = settings.live_exchange.lower()
-        if exchange == "kalshi" or (exchange == "both" and market.condition_id.startswith("KXBTC") or True):
-            # Route to Kalshi for US users
+        market_is_kalshi = not market.condition_id.startswith("0x")
+
+        if exchange == "kalshi" or (exchange == "both" and market_is_kalshi):
+            # Route to Kalshi (US-legal)
             from integrations.kalshi import place_trade as kalshi_place
-            # Try to find matching Kalshi market, fall back to Polymarket data
             trade = await kalshi_place(
                 condition_id=market.condition_id,
                 side=prediction.side,
