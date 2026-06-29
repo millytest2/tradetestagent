@@ -36,14 +36,13 @@ jobs:
 
       - name: Run one trading cycle
         env:
-          POLYMARKET_PRIVATE_KEY: ${{ secrets.POLYMARKET_PRIVATE_KEY }}
-          POLYMARKET_API_KEY: ${{ secrets.POLYMARKET_API_KEY }}
-          POLYMARKET_API_SECRET: ${{ secrets.POLYMARKET_API_SECRET }}
+          POLYMARKET_KEY_ID: ${{ secrets.POLYMARKET_KEY_ID }}
+          POLYMARKET_SECRET_KEY: ${{ secrets.POLYMARKET_SECRET_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
           NOTIFY_FROM_EMAIL: ${{ secrets.NOTIFY_FROM_EMAIL }}
           NOTIFY_SMTP_PASSWORD: ${{ secrets.NOTIFY_SMTP_PASSWORD }}
-          LIVE_EXCHANGE: polymarket
+          LIVE_EXCHANGE: polymarket_us
           BANKROLL_USDC: "100.0"
           AB_TESTING_ENABLED: "true"
           NOTIFY_SMTP_HOST: smtp.gmail.com
