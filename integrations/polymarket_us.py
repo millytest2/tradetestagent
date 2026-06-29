@@ -164,6 +164,73 @@ async def get_active_markets(limit: int = 200):
     return markets
 
 
+async def get_whale_signal(market, threshold_usd: float = 1500.0) -> float:
+    """
+    Detect whale order-book pressure on a Polymarket US market.
+
+    Returns +1.0 (big money stacked on the buy/YES side) to -1.0 (big money on
+    the sell/NO side), 0.0 if no meaningful whale activity or the book can't be
+    read. Best-effort: tries the gateway order-book endpoints and degrades
+    gracefully (same 0.0 the bot used before) if the shape differs.
+    """
+    import httpx
+
+    slug = getattr(market, "slug", "") or getattr(market, "condition_id", "")
+    if not slug:
+        return 0.0
+
+    book = None
+    for path in (f"/v1/markets/{slug}/book",
+                 f"/v1/markets/{slug}/orderbook",
+                 f"/v1/markets/{slug}/bbo"):
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get("https://gateway.polymarket.us" + path)
+                if r.status_code == 200:
+                    book = r.json()
+                    break
+        except Exception:
+            continue
+    if not isinstance(book, dict):
+        return 0.0
+
+    try:
+        # Order-book responses vary; accept the common key names
+        bids = book.get("bids") or book.get("buys") or book.get("buy") or []
+        asks = book.get("asks") or book.get("sells") or book.get("sell") or []
+        # Some APIs nest under "orderbook"
+        if not bids and not asks and isinstance(book.get("orderbook"), dict):
+            ob = book["orderbook"]
+            bids = ob.get("bids", []); asks = ob.get("asks", [])
+
+        def _whale_notional(orders) -> float:
+            total = 0.0
+            for o in orders:
+                if not isinstance(o, dict):
+                    continue
+                price = float(o.get("price", 0) or 0)
+                size = float(o.get("size", o.get("quantity", 0)) or 0)
+                notional = price * size
+                if notional >= threshold_usd:
+                    total += notional
+            return total
+
+        bid_usd = _whale_notional(bids)
+        ask_usd = _whale_notional(asks)
+        total = bid_usd + ask_usd
+        if total < threshold_usd:
+            return 0.0
+        imbalance = (bid_usd - ask_usd) / total
+        logger.info(
+            "PM-US whale: %+.2f (bids=$%.0f asks=$%.0f) for %s",
+            imbalance, bid_usd, ask_usd, slug,
+        )
+        return float(max(-1.0, min(1.0, imbalance)))
+    except Exception as e:
+        logger.debug("PM-US whale signal failed for %s: %s", slug, e)
+        return 0.0
+
+
 async def get_balance() -> float:
     """Return USD balance on the Polymarket US account."""
     try:

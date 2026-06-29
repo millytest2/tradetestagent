@@ -17,6 +17,7 @@ from typing import Optional
 
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+from config import settings
 from core.models import (
     FlaggedMarket,
     ResearchReport,
@@ -127,7 +128,13 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
     reddit_task  = asyncio.create_task(search_reddit(question, max_posts=20))
     rss_task     = asyncio.create_task(search_rss(question, max_per_feed=8))
     trends_task  = asyncio.create_task(get_trend_score(question))
-    whale_task   = asyncio.create_task(get_whale_signal(flagged.market))
+    # Whale signal: use the Polymarket US order book when trading there,
+    # otherwise the international CLOB book.
+    if settings.live_exchange.lower() in ("polymarket_us", "polymarketus", "pmus"):
+        from integrations.polymarket_us import get_whale_signal as _whale_fn
+    else:
+        _whale_fn = get_whale_signal
+    whale_task   = asyncio.create_task(_whale_fn(flagged.market))
 
     twitter_posts, reddit_posts, rss_posts, trend_score, whale_signal = (
         await asyncio.gather(

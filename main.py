@@ -238,31 +238,35 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
 
 
 async def _run_pending_postmortems() -> None:
-    """Run postmortems on any recently settled losing trades that need analysis."""
+    """
+    Analyze recently settled trades the system hasn't studied yet — BOTH wins
+    and losses. Losses → run_postmortem (why it failed). Wins → run_winmortem
+    (what worked, so we repeat it). The agents learn from both outcomes.
+    """
     from core.database import SessionLocal, TradeRow, PostmortemRow
-    from sqlalchemy import func
+    from agents.postmortem_agent import run_winmortem
 
     try:
         with SessionLocal() as session:
-            # Find losses that don't yet have a postmortem
-            subq = session.query(PostmortemRow.trade_id).distinct().subquery()
             analyzed_ids = session.query(PostmortemRow.trade_id).distinct()
             unanalyzed = (
                 session.query(TradeRow)
                 .filter(
-                    TradeRow.outcome == "LOSS",
+                    TradeRow.outcome.in_(["WIN", "LOSS"]),
                     TradeRow.id.not_in(analyzed_ids),
                 )
-                .limit(5)
+                .limit(8)
                 .all()
             )
 
         if not unanalyzed:
             return
 
+        n_win = sum(1 for r in unanalyzed if r.outcome == "WIN")
+        n_loss = sum(1 for r in unanalyzed if r.outcome == "LOSS")
         console.print(
-            f"\n[bold]Step 5[/bold] Running postmortems on "
-            f"[red]{len(unanalyzed)}[/red] unanalyzed losses..."
+            f"\n[bold]Step 5[/bold] Learning from "
+            f"[green]{n_win} wins[/green] + [red]{n_loss} losses[/red]..."
         )
 
         from core.models import Trade, MarketSide, TradeStatus, TradeOutcome
@@ -283,16 +287,17 @@ async def _run_pending_postmortems() -> None:
                 settled_at=row.settled_at,
                 notes=row.notes or "{}",
             )
-            report = await run_postmortem(trade)
+            if trade.outcome == TradeOutcome.WIN:
+                report = await run_winmortem(trade)
+                tag = "[green]✓ Win analyzed[/green]"
+            else:
+                report = await run_postmortem(trade)
+                tag = "[red]✓ Loss analyzed[/red]"
             if report:
-                console.print(
-                    f"  ✓ Postmortem done — "
-                    f"{len(report.findings)} findings, "
-                    f"{len(report.system_updates)} system updates"
-                )
+                console.print(f"  {tag} — {len(report.findings)} findings")
 
     except Exception as e:
-        logger.error("Postmortem sweep failed: %s", e)
+        logger.error("Learning sweep failed: %s", e)
 
 
 # ── Retrain command ────────────────────────────────────────────────────────────

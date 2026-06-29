@@ -302,3 +302,90 @@ async def run_postmortem(trade: Trade) -> Optional[PostmortemReport]:
         len(system_updates),
     )
     return report
+
+
+# ── Win analysis — learn from what WORKED ───────────────────────────────────────
+
+def _win_context(trade: Trade) -> str:
+    notes = {}
+    try:
+        notes = json.loads(trade.notes or "{}")
+    except Exception:
+        pass
+    features = notes.get("features", {})
+    return f"""
+WINNING TRADE DETAILS
+=====================
+Market question:  {trade.question}
+Side traded:      {trade.side.value}
+Entry price:      {trade.entry_price:.3f}
+Bet size (USDC):  ${trade.bet_usdc:.2f}
+PnL (USDC):       +${trade.pnl_usdc:.2f}
+
+FEATURE SNAPSHOT AT TRADE TIME
+================================
+{json.dumps(features, indent=2) if features else '(not available)'}
+""".strip()
+
+
+async def run_winmortem(trade: Trade) -> Optional[PostmortemReport]:
+    """
+    Analyze a WINNING trade to extract WHAT WORKED, so the system can find and
+    repeat more trades like it. Mirror image of run_postmortem (which studies
+    losses) — together they let the agents learn from both outcomes.
+    """
+    if trade.outcome != TradeOutcome.WIN:
+        return None
+
+    logger.info(
+        "Running win-analysis on trade %d: '%s'", trade.id or 0, trade.question[:70]
+    )
+    past_lessons = get_active_lessons(limit=15)
+    lessons_block = "\n".join(f"- {l}" for l in past_lessons[:10])
+    ctx = _win_context(trade)
+
+    results = await asyncio.gather(
+        _ask_specialist(
+            "SuccessFactor",
+            "You analyze WINNING prediction-market trades to find what made them "
+            "work so the system can repeat it. Respond ONLY as JSON with keys "
+            "finding, root_cause, recommendation, severity. Use severity 'high' "
+            "when the win reflects a strong, repeatable edge worth weighting more.",
+            f"This trade WON. Identify the single biggest factor that made it "
+            f"work, and how the bot should find more trades like it.\n\n{ctx}",
+            trade,
+        ),
+        _ask_specialist(
+            "WinPattern",
+            "You spot repeatable WINNING patterns across trades. Respond ONLY as "
+            "JSON with keys finding, root_cause, recommendation, severity.",
+            f"This trade WON. What repeatable pattern does it match, and which "
+            f"signals should the model weight MORE going forward?\n\n"
+            f"Past lessons:\n{lessons_block}\n\n{ctx}",
+            trade,
+        ),
+        return_exceptions=True,
+    )
+
+    findings: list[PostmortemFinding] = []
+    for result in results:
+        if isinstance(result, PostmortemFinding):
+            findings.append(result)
+            save_postmortem_finding(result)
+            # Persist as a positive lesson the prediction agent will read
+            save_lesson(
+                category=f"win_{result.agent_name}",
+                lesson=f"WHAT WORKED: {result.recommendation}",
+                trade_id=trade.id,
+            )
+        elif isinstance(result, Exception):
+            logger.error("A win-analysis agent raised: %s", result)
+
+    logger.info("Win-analysis complete — %d findings on trade %d", len(findings), trade.id or 0)
+    return PostmortemReport(
+        trade_id=trade.id or 0,
+        question=trade.question,
+        findings=findings,
+        system_updates=[],
+        lessons_learned="\n".join(f.recommendation for f in findings),
+    )
