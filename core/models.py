@@ -52,6 +52,7 @@ class Market(BaseModel):
     fetched_at: datetime = Field(default_factory=datetime.utcnow)
     yes_token_id: str = ""        # CLOB token ID for order book whale detection
     no_token_id: str = ""
+    slug: str = ""                # market slug — required by the Polymarket US API
 
 
 class FlaggedMarket(BaseModel):

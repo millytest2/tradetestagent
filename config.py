@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     polymarket_api_passphrase: str = ""
     polymarket_signature_type: int = 1   # 1=Privy/email embedded wallet, 0=MetaMask EOA
 
+    # Polymarket US (CFTC-regulated, US-legal API — api.polymarket.us)
+    # Generate at polymarket.us/developer after KYC. Ed25519 auth.
+    polymarket_key_id: str = ""          # Key ID (UUID)
+    polymarket_secret_key: str = ""      # Base64-encoded Ed25519 private key
+
     # Kalshi (US-legal, CFTC-regulated — for live trading from US)
     # Auth uses RSA-PSS: generate key pair at kalshi.com → Settings → API
     kalshi_api_key: str = ""              # Key ID (UUID from Kalshi dashboard)

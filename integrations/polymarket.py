@@ -127,6 +127,7 @@ def _parse_market(raw: dict) -> Optional[Market]:
 
         return Market(
             condition_id=raw.get("conditionId") or raw.get("id") or "",
+            slug=raw.get("slug") or "",
             question=raw.get("question") or raw.get("title") or "Unknown",
             description=raw.get("description") or "",
             end_date_iso=end_date,

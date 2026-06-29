@@ -324,6 +324,17 @@ async def evaluate_and_trade(
                 price=market_price,
                 dry_run=dry_run,
             )
+        elif exchange in ("polymarket_us", "polymarketus", "pmus"):
+            # Route to Polymarket US (CFTC-regulated, US-legal — api.polymarket.us)
+            from integrations.polymarket_us import place_trade as pmus_place
+            trade = await pmus_place(
+                condition_id=market.condition_id,
+                side=prediction.side,
+                bet_usdc=sizing.bet_usdc,
+                price=market_price,
+                dry_run=dry_run,
+                slug=market.slug,
+            )
         else:
             from integrations.polymarket import place_trade as poly_place
             trade = await poly_place(
