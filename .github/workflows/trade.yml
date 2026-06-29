@@ -45,9 +45,10 @@ jobs:
           LIVE_EXCHANGE: polymarket_us
           BANKROLL_USDC: "98.0"
           AB_TESTING_ENABLED: "true"
+          MIN_CONFIDENCE: "0.60"
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
-        run: python main.py --live --run-once --max-trades 3
+        run: python main.py --live --run-once --max-trades 3 --top-n 25
 
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"

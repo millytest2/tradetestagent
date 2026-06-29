@@ -231,6 +231,63 @@ async def get_whale_signal(market, threshold_usd: float = 1500.0) -> float:
         return 0.0
 
 
+async def get_current_price(slug: str, side: str):
+    """Current market price (0..1) for our side of a market, or None."""
+    import httpx, json as _json
+    if not slug:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(f"https://gateway.polymarket.us/v1/markets/{slug}")
+            if r.status_code != 200:
+                return None
+            data = r.json()
+        m = data.get("market") if isinstance(data, dict) and "market" in data else data
+        prices = m.get("outcomePrices") if isinstance(m, dict) else None
+        if isinstance(prices, str):
+            prices = _json.loads(prices)
+        if not prices or len(prices) < 2:
+            return None
+        yes_p = float(prices[0])
+        return yes_p if side == "YES" else (1.0 - yes_p)
+    except Exception as e:
+        logger.debug("PM-US price fetch failed for %s: %s", slug, e)
+        return None
+
+
+async def close_position(slug: str, side: MarketSide, shares: float, price: float,
+                         dry_run: bool = True) -> bool:
+    """
+    SELL/exit an open position on Polymarket US. Returns True on success.
+    Best-effort: uses the SDK close-position / sell-intent path.
+    """
+    if dry_run:
+        logger.info("[DRY RUN] Close %s %s (%.0f shares @ %.2f)", side.value, slug, shares, price)
+        return True
+    try:
+        client = _client()
+        # Sell the side we hold: opposite intent of the buy
+        intent = "ORDER_INTENT_SELL_LONG" if side == MarketSide.YES else "ORDER_INTENT_SELL_SHORT"
+        try:
+            client.orders.close_position({"marketSlug": slug})
+        except Exception:
+            # Fallback: explicit sell limit order
+            client.orders.create({
+                "marketSlug": slug,
+                "intent": intent,
+                "type": "ORDER_TYPE_LIMIT",
+                "price": {"value": f"{max(0.01, min(0.99, price)):.2f}", "currency": "USD"},
+                "quantity": int(shares),
+                "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+            })
+        client.close()
+        logger.info("Closed position %s %s (%.0f shares)", side.value, slug, shares)
+        return True
+    except Exception as e:
+        logger.error("PM-US close_position failed for %s: %s", slug, e)
+        return False
+
+
 async def check_settlement(slug: str):
     """
     Check if a Polymarket US market has resolved.

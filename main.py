@@ -111,7 +111,7 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     cycle_start = datetime.utcnow()
     console.rule(f"[cyan]Cycle started {cycle_start.strftime('%H:%M:%S UTC')}[/cyan]")
 
-    # ── Step 0: Settle any resolved positions (closes the learning loop) ───────
+    # ── Step 0: Settle resolved positions + manage open ones (buy/sell/hold) ───
     if not use_mock:
         try:
             settled = await _settle_pending_trades()
@@ -119,6 +119,12 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 console.print(f"  [green]✓ Settled {settled} resolved position(s)[/green]")
         except Exception as e:
             logger.debug("Settlement sweep failed (non-blocking): %s", e)
+        try:
+            exited = await _manage_open_positions(dry_run=dry_run)
+            if exited:
+                console.print(f"  [yellow]✓ Exited {exited} position(s) on stop-loss/take-profit[/yellow]")
+        except Exception as e:
+            logger.debug("Position management failed (non-blocking): %s", e)
 
     # ── Step 1: Scan ──────────────────────────────────────────────────────────
     console.print("[bold]Step 1[/bold] Scanning markets...")
@@ -291,6 +297,52 @@ async def _settle_pending_trades() -> int:
         update_trade_outcome(tid, outcome, pnl)
         settled += 1
     return settled
+
+
+async def _manage_open_positions(dry_run: bool = True) -> int:
+    """
+    Decide BUY/SELL/HOLD on every open position each cycle (the bot doesn't
+    just buy-and-pray). Checks the current market price vs entry and EXITS
+    early when a position falls past the stop-loss or rises past the
+    take-profit. Returns how many positions it exited.
+    """
+    from core.database import SessionLocal, TradeRow, update_trade_outcome
+    from core.models import TradeOutcome, MarketSide
+
+    exchange = settings.live_exchange.lower()
+    if exchange not in ("polymarket_us", "polymarketus", "pmus"):
+        return 0
+    from integrations.polymarket_us import get_current_price, close_position
+
+    with SessionLocal() as s:
+        open_pos = [
+            (r.id, r.market_id, r.side, r.shares, r.bet_usdc, r.entry_price)
+            for r in s.query(TradeRow).filter(TradeRow.outcome == "PENDING").all()
+        ]
+
+    exited = 0
+    for tid, slug, side_str, shares, bet, entry in open_pos:
+        side = MarketSide.YES if side_str == "YES" else MarketSide.NO
+        cur = await get_current_price(slug, side_str)
+        if cur is None or entry <= 0:
+            continue  # can't price it → HOLD
+        change = (cur - entry) / entry        # +ve = winning, -ve = losing
+        # HOLD unless it crosses a stop-loss or take-profit band
+        if change <= -settings.stop_loss_pct:
+            reason, outcome = "stop-loss", TradeOutcome.LOSS
+        elif change >= settings.take_profit_pct:
+            reason, outcome = "take-profit", TradeOutcome.WIN
+        else:
+            continue  # HOLD
+        ok = await close_position(slug, side, shares, cur, dry_run=dry_run)
+        if ok:
+            # realised pnl at the current price (shares valued at `cur`)
+            pnl = shares * cur - bet
+            update_trade_outcome(tid, outcome, pnl)
+            logger.info("Exited trade %d on %s (%.0f%% move) pnl=$%.2f",
+                        tid, reason, change * 100, pnl)
+            exited += 1
+    return exited
 
 
 async def _run_pending_postmortems() -> None:

@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     kelly_fraction: float = Field(default=0.25, ge=0.01, le=1.0)
     min_edge: float = Field(default=0.05, ge=0.0, le=1.0)
     fee_buffer: float = Field(default=0.03, ge=0.0, le=0.5)  # extra edge required to clear exchange fees
+
+    # ── Position management (SELL / exit rules on open positions) ──────────────
+    stop_loss_pct: float = Field(default=0.40, ge=0.0, le=1.0)    # exit if position value falls 40% from entry
+    take_profit_pct: float = Field(default=0.60, ge=0.0, le=5.0)  # lock in if position value rises 60% from entry
     min_confidence: float = Field(default=0.65, ge=0.5, le=1.0)
     max_bet_fraction: float = Field(default=0.10, ge=0.001, le=0.5)
     min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)
