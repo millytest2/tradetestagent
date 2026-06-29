@@ -1,0 +1,15 @@
+app = "tradetestagent"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  LIVE_EXCHANGE = "polymarket"
+  AB_TESTING_ENABLED = "true"
+  BANKROLL_USDC = "100.0"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
