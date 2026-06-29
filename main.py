@@ -419,10 +419,18 @@ if __name__ == "__main__":
         import time
         time.sleep(5)
 
-    use_mock = args.demo or not settings.anthropic_api_key
+    # Mock markets are ONLY for explicit --demo. Live and normal runs always
+    # scan REAL Polymarket markets. Without an Anthropic key the prediction
+    # agent falls back to XGBoost + rule-based (no LLM) — but on real markets.
+    use_mock = args.demo and not args.live
     if use_mock:
         # Lower confidence threshold for demo so we can see trade signals fire
         settings.min_confidence = 0.51
+    if args.live and not settings.anthropic_api_key:
+        console.print(
+            "[yellow]⚠  No ANTHROPIC_API_KEY — predictions use XGBoost + "
+            "rule-based only (no LLM layer). Scanning REAL markets.[/yellow]"
+        )
 
     if args.paper_blast:
         if args.live:
