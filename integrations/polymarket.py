@@ -237,9 +237,15 @@ async def place_trade(
                 "export your wallet private key from Polymarket Settings → Wallet → Export"
             )
 
-        # signature_type=1 for Privy/email/social embedded wallets
-        # signature_type=0 for MetaMask / hardware wallets
-        sig_type = 1 if "@" in private_key or len(private_key) < 60 else 0
+        # Derive the wallet address (funder) from the private key
+        from eth_account import Account
+        funder = Account.from_key(private_key).address
+        logger.info("Polymarket wallet address: %s", funder)
+
+        # signature_type=1: Polymarket proxy/email embedded wallet (Privy)
+        # signature_type=0: direct EOA (MetaMask, hardware wallet)
+        # Configurable via POLYMARKET_SIGNATURE_TYPE env var; default=1 for Privy
+        sig_type = int(getattr(settings, "polymarket_signature_type", 1))
 
         # Derive API creds from private key (idempotent — same key → same creds)
         base_client = ClobClient(
@@ -247,6 +253,7 @@ async def place_trade(
             chain_id=137,
             key=private_key,
             signature_type=sig_type,
+            funder=funder,
         )
         creds = base_client.create_or_derive_api_creds()
 
@@ -256,6 +263,7 @@ async def place_trade(
             key=private_key,
             creds=creds,
             signature_type=sig_type,
+            funder=funder,
         )
 
         # Fetch market to get correct token_id for the outcome side
