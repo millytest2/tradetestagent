@@ -306,7 +306,7 @@ def retrain_model() -> None:
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 
-async def main_loop(dry_run: bool, interval_seconds: int) -> None:
+async def main_loop(dry_run: bool, interval_seconds: int, max_trades: int = None) -> None:
     """Run the pipeline continuously at the specified interval."""
     _print_banner()
     init_db()
@@ -321,7 +321,7 @@ async def main_loop(dry_run: bool, interval_seconds: int) -> None:
 
     while True:
         try:
-            await run_pipeline(dry_run=dry_run)
+            await run_pipeline(dry_run=dry_run, max_trades=max_trades)
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted — exiting.[/yellow]")
             break
@@ -400,6 +400,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--daemon", action="store_true",
         help="Run forever in background, logging to bot.log (use with nohup or screen)",
+    )
+    p.add_argument(
+        "--max-trades", type=int, default=None,
+        help="Cap how many trades to place per cycle (safety limit for live runs)",
     )
     return p.parse_args()
 
@@ -512,7 +516,9 @@ if __name__ == "__main__":
         for i in range(cycles):
             if cycles > 1:
                 console.rule(f"[cyan]Cycle {i+1} / {cycles}[/cyan]")
-            asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n, use_mock=use_mock))
+            asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n,
+                                     use_mock=use_mock, max_trades=args.max_trades))
         _print_stats()
     else:
-        asyncio.run(main_loop(dry_run=dry_run, interval_seconds=args.interval))
+        asyncio.run(main_loop(dry_run=dry_run, interval_seconds=args.interval,
+                              max_trades=args.max_trades))
