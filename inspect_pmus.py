@@ -1,49 +1,44 @@
 """
-Diagnostic: dump the real Polymarket US market structure so we can map
-slugs correctly. Public read — no order is placed, no money moves.
+Diagnostic: find which query returns OPEN Polymarket US markets.
+Read-only — no order placed, no money moves.
 
 Run:  python inspect_pmus.py
-Then paste the output back.
+Then paste the whole output back.
 """
 import json
-from polymarket_us import PolymarketUS
+import httpx
 
-print("Connecting to Polymarket US...")
-client = PolymarketUS()
+BASE = "https://gateway.polymarket.us/v1/markets"
 
-result = client.markets.list()
-print("RESULT TYPE:", type(result).__name__)
+def show(label, params):
+    print(f"\n===== {label}  params={params} =====")
+    try:
+        r = httpx.get(BASE, params=params, timeout=20)
+        print("HTTP", r.status_code)
+        data = r.json()
+        markets = data.get("markets", data if isinstance(data, list) else [])
+        print("returned:", len(markets), "markets")
+        open_ones = [m for m in markets
+                     if isinstance(m, dict) and not m.get("closed") and not m.get("archived")]
+        print("OPEN (not closed/archived):", len(open_ones))
+        for m in open_ones[:5]:
+            print(f"   slug={m.get('slug')!r:50} closed={m.get('closed')} "
+                  f"active={m.get('active')} prices={m.get('outcomePrices')} "
+                  f"cat={m.get('category')}")
+        # if none open, show what the first few look like
+        if not open_ones and markets:
+            print("   (no open ones — sample of what came back:)")
+            for m in markets[:3]:
+                if isinstance(m, dict):
+                    print(f"   slug={m.get('slug')!r} closed={m.get('closed')} active={m.get('active')}")
+    except Exception as e:
+        print("ERROR:", e)
 
-# The result is a dict — show its top-level keys
-if isinstance(result, dict):
-    print("TOP-LEVEL KEYS:", list(result.keys()))
-    # Find the list of markets inside
-    markets = None
-    for k, v in result.items():
-        if isinstance(v, list):
-            print(f"  -> key '{k}' holds a list of {len(v)} items")
-            if markets is None:
-                markets = v
-                markets_key = k
-    if markets is None:
-        print("No list found. Full dict (truncated):")
-        print(json.dumps(result, default=str)[:2000])
-else:
-    markets = list(result)
+show("no filter", {})
+show("active only", {"active": "true"})
+show("active + closed=false", {"active": "true", "closed": "false"})
+show("closed=false only", {"closed": "false"})
+show("limit 500", {"limit": 500})
+show("active + limit 500", {"active": "true", "limit": 500})
 
-if markets:
-    print(f"\nUsing {len(markets)} markets. First 5:\n")
-    for i, m in enumerate(markets[:5]):
-        print(f"========== MARKET {i} ==========")
-        if isinstance(m, dict):
-            for k, v in m.items():
-                print(f"  {k}: {repr(v)[:140]}")
-        elif hasattr(m, "model_dump"):
-            for k, v in m.model_dump().items():
-                print(f"  {k}: {repr(v)[:140]}")
-        else:
-            print("  (raw):", repr(m)[:400])
-        print()
-
-client.close()
-print("Done — copy everything above and paste it back.")
+print("\nDone — copy everything above and paste it back.")
