@@ -20,10 +20,12 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Restore trade database
-        uses: actions/cache/restore@v4   # restore-only: no auto-save, avoids
-        with:                            # the duplicate-key collision with the
-          path: tradetestagent.db        # explicit Persist step below
+      - name: Restore trade database + trained model
+        uses: actions/cache/restore@v4   # restore-only: no auto-save
+        with:
+          path: |
+            tradetestagent.db
+            ml/xgb_calibrator.joblib
           key: trade-db-${{ github.run_number }}
           restore-keys: |
             trade-db-
@@ -53,9 +55,11 @@ jobs:
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"
 
-      - name: Persist updated database
+      - name: Persist updated database + trained model
         uses: actions/cache/save@v4
         if: always()
         with:
-          path: tradetestagent.db
+          path: |
+            tradetestagent.db
+            ml/xgb_calibrator.joblib
           key: trade-db-${{ github.run_number }}

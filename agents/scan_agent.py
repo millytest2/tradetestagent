@@ -127,6 +127,32 @@ def _flag_and_score(markets: list[Market], source: str) -> list[FlaggedMarket]:
     return flagged
 
 
+def _diversify(flagged: list[FlaggedMarket], max_per_group: int = 3) -> list[FlaggedMarket]:
+    """
+    Re-order so the top of the list spans many categories/events instead of
+    25 near-identical markets (e.g. every MLB-draft pick). Groups by category
+    tag + the first few question words, caps each group near the top, and
+    appends the overflow afterwards. Keeps highest-priority items first.
+    """
+    import re
+
+    def _sig(fm: FlaggedMarket) -> str:
+        cat = fm.market.tags[0] if fm.market.tags else "other"
+        words = re.findall(r"[a-z0-9]+", fm.market.question.lower())[:3]
+        return f"{cat}:{'-'.join(words)}"
+
+    primary, overflow = [], []
+    counts: dict[str, int] = {}
+    for fm in flagged:  # already sorted by priority
+        sig = _sig(fm)
+        if counts.get(sig, 0) < max_per_group:
+            counts[sig] = counts.get(sig, 0) + 1
+            primary.append(fm)
+        else:
+            overflow.append(fm)
+    return primary + overflow
+
+
 async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
     """
     Scan prediction markets from Polymarket AND Kalshi (if configured).
@@ -149,9 +175,11 @@ async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
         us_markets = await pmus_get(limit=limit)
         flagged = _flag_and_score(us_markets, source="polymarket_us")
         flagged.sort(key=lambda x: x.priority_score, reverse=True)
+        flagged = _diversify(flagged)   # spread across categories, not 25 MLB clones
+        cats = {(_fm.market.tags[0] if _fm.market.tags else "other") for _fm in flagged[:25]}
         logger.info(
-            "Scan complete — %d US markets queued (%d total fetched)",
-            len(flagged), len(us_markets),
+            "Scan complete — %d US markets queued across %d categories (%d fetched)",
+            len(flagged), len(cats), len(us_markets),
         )
         return flagged
 
