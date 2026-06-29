@@ -227,45 +227,63 @@ async def place_trade(
     # ── Live execution via py-clob-client ─────────────────────────────────────
     try:
         from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.clob_types import MarketOrderArgs, OrderType, ApiCreds
+        from py_clob_client.order_builder.constants import BUY, SELL
 
-        from py_clob_client.clob_types import ApiCreds
-        client = ClobClient(
+        private_key = settings.polymarket_private_key
+        if not private_key:
+            raise ValueError(
+                "POLYMARKET_PRIVATE_KEY not set in .env — "
+                "export your wallet private key from Polymarket Settings → Wallet → Export"
+            )
+
+        # signature_type=1 for Privy/email/social embedded wallets
+        # signature_type=0 for MetaMask / hardware wallets
+        sig_type = 1 if "@" in private_key or len(private_key) < 60 else 0
+
+        # Derive API creds from private key (idempotent — same key → same creds)
+        base_client = ClobClient(
             host=CLOB_BASE,
-            chain_id=137,  # Polygon mainnet
-            key=settings.polymarket_private_key,
-            signature_type=2,  # EIP-712
+            chain_id=137,
+            key=private_key,
+            signature_type=sig_type,
         )
-        creds = client.create_or_derive_api_creds()
+        creds = base_client.create_or_derive_api_creds()
+
         client = ClobClient(
             host=CLOB_BASE,
             chain_id=137,
-            key=settings.polymarket_private_key,
+            key=private_key,
             creds=creds,
-            signature_type=2,
+            signature_type=sig_type,
         )
 
-        # Determine token_id for the outcome
+        # Fetch market to get correct token_id for the outcome side
         market = await get_market_by_id(condition_id)
         if not market:
             raise ValueError(f"Market {condition_id} not found")
 
-        # Calculate shares from bet amount
-        shares = bet_usdc / max(price, 1e-6)
+        clob_side = BUY if side == MarketSide.YES else SELL
+        token_id = market.yes_token_id if side == MarketSide.YES else market.no_token_id
 
-        order_args = OrderArgs(
-            token_id=condition_id,
-            price=price,
-            size=shares,
-            side=side.value,
+        if not token_id:
+            raise ValueError(f"No token_id for {side.value} side of {condition_id}")
+
+        # Market order: spend exactly bet_usdc at best available price (FOK)
+        mo = MarketOrderArgs(
+            token_id=token_id,
+            amount=bet_usdc,
+            side=clob_side,
         )
-        signed_order = client.create_and_sign_order(order_args)
-        resp = client.post_order(signed_order, OrderType.GTC)
+        signed_order = client.create_market_order(mo)
+        resp = client.post_order(signed_order, OrderType.FOK)
 
         tx_hash = resp.get("orderID", "") or resp.get("transactionHash", "")
+        shares = bet_usdc / max(price, 1e-6)
+
         logger.info(
-            "Order placed: %s %s on %s — tx %s",
-            side.value, f"${bet_usdc:.2f}", condition_id, tx_hash,
+            "Polymarket order placed: %s $%.2f on %s — tx %s",
+            side.value, bet_usdc, condition_id, tx_hash,
         )
 
         return Trade(
@@ -280,7 +298,7 @@ async def place_trade(
         )
 
     except ImportError:
-        logger.error("py-clob-client not installed — falling back to dry run")
+        logger.error("py-clob-client not installed — pip install py-clob-client")
         shares = bet_usdc / max(price, 1e-6)
         return Trade(
             market_id=condition_id,
