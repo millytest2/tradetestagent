@@ -128,24 +128,46 @@ async def get_active_markets(limit: int = 200):
     """
     import httpx
 
+    # Sports markets number in the thousands and would crowd out everything
+    # else if we only paginated the default list. So we ALSO pull the
+    # non-sports categories explicitly (crypto, politics, economics, weather)
+    # and merge — guaranteeing econ/Bitcoin/politics/temperature markets are in
+    # the pool, not buried past the fetch window.
+    CATEGORIES = ["crypto", "politics", "economics", "weather", "pop-culture", "science"]
     raw_markets = []
+    seen_slugs = set()
+
+    async def _pull(client, params, cap):
+        out, offset = [], 0
+        while len(out) < cap:
+            try:
+                resp = await client.get(PMUS_GATEWAY, params={**params, "limit": 100, "offset": offset})
+                if resp.status_code != 200:
+                    break
+                page = resp.json().get("markets", []) if isinstance(resp.json(), dict) else []
+            except Exception:
+                break
+            if not page:
+                break
+            out.extend(page)
+            if len(page) < 100:
+                break
+            offset += 100
+        return out
+
     try:
         async with httpx.AsyncClient(timeout=25) as client:
-            offset = 0
-            while len(raw_markets) < 1000:
-                resp = await client.get(
-                    PMUS_GATEWAY,
-                    params={"closed": "false", "limit": 100, "offset": offset},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                page = data.get("markets", []) if isinstance(data, dict) else []
-                if not page:
-                    break
-                raw_markets.extend(page)
-                if len(page) < 100:
-                    break
-                offset += 100
+            # 1) explicit non-sports categories first (so they're guaranteed in)
+            for cat in CATEGORIES:
+                for m in await _pull(client, {"closed": "false", "category": cat}, 200):
+                    sl = m.get("slug")
+                    if sl and sl not in seen_slugs:
+                        seen_slugs.add(sl); raw_markets.append(m)
+            # 2) then the general pool to fill out the rest (incl. sports)
+            for m in await _pull(client, {"closed": "false"}, 800):
+                sl = m.get("slug")
+                if sl and sl not in seen_slugs:
+                    seen_slugs.add(sl); raw_markets.append(m)
     except Exception as e:
         logger.error("Polymarket US market list failed: %s", e)
         return []
