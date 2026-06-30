@@ -45,12 +45,14 @@ jobs:
           NOTIFY_FROM_EMAIL: ${{ secrets.NOTIFY_FROM_EMAIL }}
           NOTIFY_SMTP_PASSWORD: ${{ secrets.NOTIFY_SMTP_PASSWORD }}
           LIVE_EXCHANGE: polymarket_us
-          BANKROLL_USDC: "98.0"
+          BANKROLL_USDC: "20.0"          # TEST MODE: small sizing so 5 trades risk only a few $
           AB_TESTING_ENABLED: "true"
-          MIN_CONFIDENCE: "0.60"
+          MIN_CONFIDENCE: "0.45"         # TEST: lowered so it actually trades
+          MIN_EDGE: "0.02"               # TEST: lowered
+          FEE_BUFFER: "0.0"              # TEST: fees ignored per request
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
-        run: python main.py --live --run-once --max-trades 3 --top-n 25
+        run: python main.py --live --run-once --max-trades 5 --top-n 25
 
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"

@@ -350,12 +350,22 @@ async def get_balance() -> float:
     """Return USD balance on the Polymarket US account."""
     try:
         client = _client()
-        # Balance lives under the account/portfolio resource in the SDK
-        bal = client.account.balance()
+        # SDK method name varies — try the common ones, else fall back quietly
+        bal = None
+        for getter in ("balance", "get_balance", "get"):
+            acct = getattr(client, "account", None) or getattr(client, "portfolio", None)
+            if acct and hasattr(acct, getter):
+                bal = getattr(acct, getter)()
+                break
         client.close()
-        return float(getattr(bal, "available", None) or bal.get("available", 0))
+        if bal is None:
+            return settings.bankroll_usdc
+        val = getattr(bal, "available", None)
+        if val is None and isinstance(bal, dict):
+            val = bal.get("available") or bal.get("balance")
+        return float(val) if val is not None else settings.bankroll_usdc
     except Exception as e:
-        logger.warning("Polymarket US balance fetch failed: %s", e)
+        logger.debug("Balance fetch unavailable, using configured bankroll: %s", e)
         return settings.bankroll_usdc
 
 

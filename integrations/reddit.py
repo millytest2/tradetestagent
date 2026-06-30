@@ -114,8 +114,10 @@ async def search_reddit(
         logger.info("Reddit: found %d posts for '%s'", len(posts), question[:60])
 
     except httpx.HTTPStatusError as e:
-        logger.error("Reddit HTTP error %s: %s", e.response.status_code, e)
+        # Reddit routinely 403s automated/data-center requests — expected, not
+        # an error. RSS feeds cover the news signal. Keep it quiet.
+        logger.debug("Reddit unavailable (%s) — relying on RSS", e.response.status_code)
     except Exception as e:
-        logger.error("Reddit search failed: %s", e)
+        logger.debug("Reddit search skipped: %s", e)
 
     return posts
