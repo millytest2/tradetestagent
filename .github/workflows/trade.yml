@@ -47,9 +47,10 @@ jobs:
           LIVE_EXCHANGE: polymarket_us
           BANKROLL_USDC: "20.0"          # TEST MODE: small sizing so 5 trades risk only a few $
           AB_TESTING_ENABLED: "true"
-          MIN_CONFIDENCE: "0.45"         # TEST: lowered so it actually trades
-          MIN_EDGE: "0.02"               # TEST: lowered
+          MIN_CONFIDENCE: "0.40"         # TEST: lowered so it actually trades
+          MIN_EDGE: "0.0"                # TEST: trade on any edge (AI agrees w/ market otherwise)
           FEE_BUFFER: "0.0"              # TEST: fees ignored per request
+          MAX_OPEN_POSITIONS: "8"        # SAFETY STOP across cycles
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
         run: python main.py --live --run-once --max-trades 5 --top-n 25

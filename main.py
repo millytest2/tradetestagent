@@ -178,6 +178,25 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         reports = await research_markets_parallel(top_flagged, max_concurrent=5)
     console.print(f"  ✓ Research complete for [green]{len(reports)}[/green] markets")
 
+    # ── SAFETY STOP: don't keep opening positions across cycles ────────────────
+    # Across many 30-min GitHub runs this prevents the bot from over-deploying
+    # the whole wallet. If we already hold the max number of open positions,
+    # skip new trades this cycle (existing positions still settle/exit).
+    if not use_mock:
+        try:
+            from core.database import SessionLocal, TradeRow
+            with SessionLocal() as _s:
+                open_count = _s.query(TradeRow).filter(TradeRow.outcome == "PENDING").count()
+            if open_count >= settings.max_open_positions:
+                console.print(
+                    f"  [yellow]⏸ Safety stop: {open_count} open positions "
+                    f"(cap {settings.max_open_positions}) — holding, no new trades[/yellow]"
+                )
+                await _run_pending_postmortems()
+                return
+        except Exception as e:
+            logger.debug("Open-position check failed (non-blocking): %s", e)
+
     # ── Steps 3 & 4: Predict + Risk ────────────────────────────────────────────
     console.print("[bold]Step 3+4[/bold] Predicting and evaluating risk...")
     trades_placed = 0
