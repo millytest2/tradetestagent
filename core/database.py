@@ -185,6 +185,16 @@ def get_trade_stats() -> dict:
 
 # ── Postmortem CRUD ───────────────────────────────────────────────────────────
 
+def midflight_reviewed(trade_id: int) -> bool:
+    """True if an early (mid-flight) review has already been recorded for this
+    open trade — so we review a deep-loser at most once, not every cycle."""
+    with get_session() as session:
+        return session.query(PostmortemRow).filter(
+            PostmortemRow.trade_id == trade_id,
+            PostmortemRow.agent_name == "MidFlightReview",
+        ).first() is not None
+
+
 def save_postmortem_finding(finding: PostmortemFinding) -> int:
     with get_session() as session:
         row = PostmortemRow(

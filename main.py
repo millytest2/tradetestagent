@@ -493,6 +493,15 @@ async def _manage_open_positions(dry_run: bool = True) -> int:
         elif change >= settings.take_profit_pct:
             reason, outcome = "take-profit", TradeOutcome.WIN
         else:
+            # Mid-flight review: a deep unrealized loss (past -30% but not yet
+            # stopped out at -stop_loss_pct) triggers an EARLY, one-time lesson so
+            # the agents start learning from a clearly-bad bet before it settles.
+            if -settings.stop_loss_pct < change <= -0.30:
+                try:
+                    from agents.postmortem_agent import run_midflight_review
+                    await run_midflight_review(tid, cur, change * 100)
+                except Exception as e:
+                    logger.debug("Mid-flight review failed (non-blocking): %s", e)
             continue  # HOLD
         ok = await close_position(slug, side, shares, cur, dry_run=dry_run)
         if ok:

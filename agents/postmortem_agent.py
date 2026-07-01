@@ -31,10 +31,12 @@ from core.database import (
     save_system_update,
 )
 from core.models import (
+    MarketSide,
     PostmortemFinding,
     PostmortemReport,
     Trade,
     TradeOutcome,
+    TradeStatus,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,6 +304,79 @@ async def run_postmortem(trade: Trade) -> Optional[PostmortemReport]:
         len(system_updates),
     )
     return report
+
+
+# ── Mid-flight review — learn EARLY from a deep open loser (before settlement) ──
+
+async def run_midflight_review(
+    trade_id: int,
+    current_price: float,
+    unrealized_pct: float,
+) -> Optional[PostmortemFinding]:
+    """
+    Lightweight EARLY review of an OPEN position that is deeply underwater but
+    has NOT settled or stopped out yet. Runs ONE specialist to extract a lesson
+    the prediction agent reads next cycle, so the bot starts learning from a
+    clearly-bad bet before it fully resolves. Does NOT change the trade outcome
+    (it stays PENDING) and runs at most once per trade.
+    """
+    from core.database import midflight_reviewed, SessionLocal, TradeRow
+    if trade_id is None or midflight_reviewed(trade_id):
+        return None
+
+    with SessionLocal() as s:
+        r = s.query(TradeRow).filter(TradeRow.id == trade_id).first()
+        if r is None:
+            return None
+        question, side_str, entry, bet, notes, market_id = (
+            r.question, r.side, r.entry_price or 0.0, r.bet_usdc or 0.0,
+            r.notes, r.market_id,
+        )
+
+    logger.info("Mid-flight review on OPEN trade %d (%.0f%% underwater): '%s'",
+                trade_id, unrealized_pct, (question or "")[:60])
+
+    try:
+        feats = json.loads(notes or "{}").get("features", {})
+    except Exception:
+        feats = {}
+    ctx = (
+        f"OPEN LOSING POSITION (not yet settled)\n"
+        f"Market:      {question}\n"
+        f"Side:        {side_str}\n"
+        f"Entry price: {entry:.3f}\n"
+        f"Current:     {current_price:.3f}\n"
+        f"Unrealized:  {unrealized_pct:.0f}%\n"
+        f"Bet (USDC):  ${bet:.2f}\n\n"
+        f"FEATURE SNAPSHOT AT ENTRY:\n"
+        f"{json.dumps(feats, indent=2) if feats else '(not available)'}"
+    )
+    past_lessons = get_active_lessons(limit=10)
+    lessons_block = "\n".join(f"- {l}" for l in past_lessons[:8])
+
+    _t = Trade(
+        id=trade_id, market_id=market_id, question=question or market_id,
+        side=MarketSide.YES if side_str == "YES" else MarketSide.NO,
+        entry_price=entry, bet_usdc=bet, shares=0.0, status=TradeStatus.PLACED,
+    )
+    finding = await _ask_specialist(
+        "MidFlightReview",
+        "You review OPEN prediction-market positions that are losing badly but "
+        "have not resolved yet, to extract an EARLY lesson. Respond ONLY as JSON "
+        "with keys finding, root_cause, recommendation, severity.",
+        f"This position is currently {unrealized_pct:.0f}% underwater and has NOT "
+        f"settled. Identify the single most likely reason taking it was a mistake, "
+        f"and the concrete rule the scan/model should apply to avoid repeating it.\n\n"
+        f"Past lessons:\n{lessons_block}\n\n{ctx}",
+        _t,
+    )
+    save_postmortem_finding(finding)   # also serves as the run-once marker
+    save_lesson(
+        category="midflight_review",
+        lesson=f"EARLY WARNING (open position {unrealized_pct:.0f}% down): {finding.recommendation}",
+        trade_id=trade_id,
+    )
+    return finding
 
 
 # ── Win analysis — learn from what WORKED ───────────────────────────────────────
