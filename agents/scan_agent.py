@@ -93,14 +93,15 @@ def _priority_score(market: Market, flag_reason: str) -> float:
     else:
         score += min(market.volume_24h_usdc / 5_000, 1.0)
 
-    # Prefer markets resolving sooner (but not too soon) — faster feedback
+    # Resolution timing: give a mild, flat preference across the tradeable
+    # window and do NOT reward very-soon markets (we don't want everything
+    # resolving tomorrow). Actual spacing across dates is enforced separately
+    # by _spread_by_resolution so each cycle's picks span near/mid/far dates.
     days = market.time_to_resolution_days
-    if 1 <= days <= 3:
-        score += 2.0   # imminent — highest priority
-    elif 4 <= days <= 10:
-        score += 1.5
-    elif days <= 30:
-        score += 0.5
+    if days <= 45:
+        score += 0.75
+    else:
+        score += 0.25   # long-dated still allowed, slightly deprioritised
 
     # Penalise extreme prices — harder to find edge near certainty
     if market.yes_price >= 0.88 or market.yes_price <= 0.12:
@@ -153,6 +154,36 @@ def _diversify(flagged: list[FlaggedMarket], max_per_group: int = 3) -> list[Fla
     return primary + overflow
 
 
+def _spread_by_resolution(
+    flagged: list[FlaggedMarket],
+    buckets: tuple[int, ...] = (14, 21, 35, 60),
+) -> list[FlaggedMarket]:
+    """
+    Interleave markets across time-to-resolution buckets so the TOP of the list
+    (which becomes the trade candidates) spans near, mid and far dates instead
+    of clustering everything in one window. Priority order is preserved WITHIN
+    each bucket; we round-robin ACROSS buckets.
+
+    Buckets (days), given min resolution is ~7:  ≤14 | ≤21 | ≤35 | ≤60 | >60
+    """
+    groups: dict[int, list[FlaggedMarket]] = {}
+    for fm in flagged:                        # already priority-sorted
+        d = fm.market.time_to_resolution_days
+        idx = len(buckets)
+        for i, b in enumerate(buckets):
+            if d <= b:
+                idx = i
+                break
+        groups.setdefault(idx, []).append(fm)
+
+    ordered: list[FlaggedMarket] = []
+    while any(groups.values()):
+        for i in sorted(groups):
+            if groups[i]:
+                ordered.append(groups[i].pop(0))
+    return ordered
+
+
 async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
     """
     Scan prediction markets from Polymarket AND Kalshi (if configured).
@@ -175,7 +206,8 @@ async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
         us_markets = await pmus_get(limit=limit)
         flagged = _flag_and_score(us_markets, source="polymarket_us")
         flagged.sort(key=lambda x: x.priority_score, reverse=True)
-        flagged = _diversify(flagged)   # spread across categories, not 25 MLB clones
+        flagged = _diversify(flagged)          # spread across categories, not 25 MLB clones
+        flagged = _spread_by_resolution(flagged)  # spread across resolution dates too
         cats = {(_fm.market.tags[0] if _fm.market.tags else "other") for _fm in flagged[:25]}
         logger.info(
             "Scan complete — %d US markets queued across %d categories (%d fetched)",

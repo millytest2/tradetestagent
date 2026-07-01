@@ -175,7 +175,7 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
         key=lambda p: p.likes + p.retweets + p.score,
         reverse=True,
     )
-    key_claims = [p.text[:200] for p in sorted_posts[:5]]
+    key_claims = [p.text[:220] for p in sorted_posts[:8]]
 
     report = ResearchReport(
         market_id=market_id,

@@ -346,93 +346,144 @@ async def check_settlement(slug: str):
         return None
 
 
-def _coerce_balance(bal) -> float | None:
-    """Pull a USD number out of whatever shape the SDK/REST returns."""
-    if bal is None:
-        return None
-    # Object with an attribute
-    for attr in ("available", "available_balance", "cash", "usd", "balance", "value"):
-        v = getattr(bal, attr, None)
-        if v is not None:
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                pass
-    # Dict payload
-    if isinstance(bal, dict):
-        for k in ("available", "availableBalance", "available_balance",
-                  "cash", "usd", "balance", "value"):
-            if bal.get(k) is not None:
-                try:
-                    return float(bal[k])
-                except (TypeError, ValueError):
-                    pass
-    # Bare number
+# Keys that mean "spendable cash" vs "total account equity (incl. open
+# positions)". The exchange's /v1/account/balances payload can carry either or
+# both; we separate them so sizing uses genuinely spendable cash, not equity
+# that's tied up in unsettled positions.
+_CASH_KEYS = ("available", "available_balance", "availablebalance", "cash",
+              "buying_power", "buyingpower", "withdrawable", "free", "usdc", "usd")
+_TOTAL_KEYS = ("total", "equity", "portfolio_value", "portfoliovalue",
+               "net_liquidation", "networth", "total_balance", "value", "balance")
+
+
+def _num(x) -> float | None:
     try:
-        return float(bal)
+        return float(x)
     except (TypeError, ValueError):
         return None
 
 
-async def get_balance() -> float:
-    """Return the real USD balance on the Polymarket US account.
+def _extract_balance_fields(bal) -> tuple[float | None, float | None]:
+    """Return (total_equity, cash_available) from any SDK/REST balances shape.
 
-    Tries several SDK access patterns, then a raw authenticated REST call, and
-    only falls back to the configured bankroll if all of those fail. The real
-    value matters: it's what stops the bot from over-committing the wallet.
+    Either element may be None if the payload doesn't distinguish them.
     """
-    # 1) SDK — probe the common account/portfolio accessors.
+    if bal is None:
+        return None, None
+
+    # A list/tuple of per-asset balances → find the first entry that yields
+    # numbers (typically the USD/USDC line).
+    if isinstance(bal, (list, tuple)):
+        for entry in bal:
+            t, c = _extract_balance_fields(entry)
+            if t is not None or c is not None:
+                return t, c
+        return None, None
+
+    # Normalise to a lowercase-keyed dict.
+    if isinstance(bal, dict):
+        d = {str(k).lower(): v for k, v in bal.items()}
+    else:
+        d = {}
+        for k in _CASH_KEYS + _TOTAL_KEYS + ("balances", "data", "result"):
+            v = getattr(bal, k, None)
+            if v is not None:
+                d[k] = v
+
+    if not d:
+        n = _num(bal)                # bare number → treat as cash
+        return (None, n)
+
+    # Unwrap a nested container (e.g. {"data": [...]}, {"balances": {...}}).
+    for nest in ("balances", "data", "result"):
+        if nest in d and isinstance(d[nest], (list, dict)):
+            t, c = _extract_balance_fields(d[nest])
+            if t is not None or c is not None:
+                return t, c
+
+    total = next((_num(d[k]) for k in _TOTAL_KEYS if k in d and _num(d[k]) is not None), None)
+    cash = next((_num(d[k]) for k in _CASH_KEYS if k in d and _num(d[k]) is not None), None)
+    return total, cash
+
+
+async def get_account_balances() -> dict:
+    """Fetch the account balances and split into total equity vs spendable cash.
+
+    Returns {'total': float|None, 'cash': float|None}. The raw payload is logged
+    once per call so the exact exchange shape is visible in the run logs.
+    """
+    raw = None
+    # 1) SDK probe.
     try:
         client = _client()
-        bal = None
         for holder_name in ("account", "portfolio", "wallet"):
             holder = getattr(client, holder_name, None)
             if holder is None:
                 continue
-            for getter in ("balance", "get_balance", "balances", "get"):
+            for getter in ("balances", "balance", "get_balances", "get_balance", "get"):
                 fn = getattr(holder, getter, None)
                 if callable(fn):
                     try:
-                        bal = fn()
+                        raw = fn()
                         break
                     except Exception:
                         continue
-            if bal is not None:
+            if raw is not None:
                 break
         try:
             client.close()
         except Exception:
             pass
-        val = _coerce_balance(bal)
-        if val is not None and val > 0:
-            logger.info("Polymarket US live balance (SDK): $%.2f", val)
-            return val
     except Exception as e:
-        logger.debug("SDK balance probe failed: %s", e)
+        logger.debug("SDK balances probe failed: %s", e)
 
-    # 2) Raw authenticated REST fallback against api.polymarket.us.
+    # 2) Raw authenticated REST fallback.
+    if raw is None:
+        try:
+            raw = await _rest_balances_raw()
+        except Exception as e:
+            logger.debug("REST balances probe failed: %s", e)
+
+    if raw is None:
+        return {"total": None, "cash": None}
+
+    # Surface the real shape so cash-vs-total can be verified from logs.
     try:
-        val = await _rest_balance()
-        if val is not None and val > 0:
-            logger.info("Polymarket US live balance (REST): $%.2f", val)
-            return val
-    except Exception as e:
-        logger.debug("REST balance probe failed: %s", e)
+        logger.info("Raw balances payload: %s", str(raw)[:400])
+    except Exception:
+        pass
 
+    total, cash = _extract_balance_fields(raw)
+    logger.info("Balances parsed — total=%s cash=%s",
+                f"${total:.2f}" if total is not None else "n/a",
+                f"${cash:.2f}" if cash is not None else "n/a")
+    return {"total": total, "cash": cash}
+
+
+async def get_balance() -> float:
+    """Spendable USDC on the Polymarket US account.
+
+    Prefers exchange-reported cash, falls back to total equity, then to the
+    configured bankroll. Callers that need the total/cash split should use
+    get_account_balances() directly.
+    """
+    b = await get_account_balances()
+    for v in (b.get("cash"), b.get("total")):
+        if v is not None and v > 0:
+            return float(v)
     logger.debug("Live balance unavailable — using configured bankroll $%.2f",
                  settings.bankroll_usdc)
     return settings.bankroll_usdc
 
 
-async def _rest_balance() -> float | None:
-    """Best-effort authenticated GET for the account balance via the SDK's
-    own signed HTTP session, trying the documented balance endpoints."""
+async def _rest_balances_raw():
+    """Best-effort authenticated GET returning the raw balances payload."""
     client = _client()
     session = (getattr(client, "session", None)
                or getattr(client, "_session", None)
                or getattr(client, "http", None))
-    endpoints = ("/v1/account/balance", "/v1/balance", "/v1/portfolio",
-                 "/v1/account", "/v1/wallet/balance")
+    endpoints = ("/v1/account/balances", "/v1/account/balance", "/v1/balances",
+                 "/v1/balance", "/v1/portfolio", "/v1/account")
     try:
         for ep in endpoints:
             for caller in ("get", "request"):
@@ -442,9 +493,8 @@ async def _rest_balance() -> float | None:
                 try:
                     resp = fn(ep) if caller == "get" else fn("GET", ep)
                     data = resp.json() if hasattr(resp, "json") else resp
-                    val = _coerce_balance(data)
-                    if val is not None:
-                        return val
+                    if data is not None:
+                        return data
                 except Exception:
                     continue
     finally:

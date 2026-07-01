@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out
-    min_time_to_resolution_days: int = Field(default=1, ge=0)
+    min_time_to_resolution_days: int = Field(default=7, ge=0)    # no near-term/next-day resolutions
 
     # ── Infrastructure ────────────────────────────────────────────────────────
     database_url: str = "sqlite:///./tradetestagent.db"

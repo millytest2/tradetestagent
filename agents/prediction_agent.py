@@ -115,12 +115,17 @@ ML MODEL OUTPUT:
   XGBoost calibrated P(YES): {xgb_prob:.3f}  ({xgb_prob*100:.1f}%)
 {lessons_block}
 
-TASK:
-1. Critically evaluate all evidence above.
-2. Identify the single strongest reason the market price might be WRONG.
+TASK — reason it through carefully before answering:
+1. Weigh the evidence above by QUALITY, not just quantity. A handful of
+   low-engagement posts or generic headlines is weak evidence; treat it as such.
+2. Identify the single strongest concrete reason the market price might be
+   WRONG. If you cannot name a specific, credible reason, there is no edge.
 3. Estimate your own P(YES) between 0.0 and 1.0.
-4. State your confidence level (0.0–1.0) in this estimate.
-5. Recommend YES, NO, or PASS.
+4. State your confidence (0.0–1.0). Base it on evidence quality: thin or
+   conflicting information → LOW confidence. Do not manufacture confidence.
+5. Recommend YES or NO ONLY if you found a specific mispricing reason in step 2
+   AND your P(YES) diverges meaningfully from the market price. Otherwise
+   recommend PASS. When in doubt, PASS — a skipped trade costs nothing.
 
 CRITICAL: Respond with ONLY the JSON object below. Do NOT write any analysis,
 preamble, or explanation before the JSON. Start your response with {{ immediately.
@@ -226,7 +231,7 @@ async def predict_market(
             # rejects it with a 400.)
             response = _client.messages.create(
                 model=settings.llm_model,
-                max_tokens=1024,
+                max_tokens=1536,   # more room to reason through the evidence
                 messages=[{"role": "user", "content": prompt}],
             )
 
@@ -317,6 +322,19 @@ async def predict_market(
                 sentiment_compound, market.yes_price, fade * 100,
             )
 
+    # ── Respect the LLM's own recommendation ──────────────────────────────────
+    # The model returns YES / NO / PASS. This used to be ignored, so the bot
+    # took positions the AI itself flagged as PASS (as happened on every trade
+    # in earlier runs). Now a PASS means "no clear edge" and cuts conviction —
+    # only a genuinely strong quantitative signal can still get through.
+    rec = (recommendation or "PASS").upper()
+    if rec == "PASS":
+        confidence = max(0.0, confidence - 0.12)
+        logger.info(
+            "LLM recommended PASS — confidence −0.12 → %.2f for '%s'",
+            confidence, market.question[:60],
+        )
+
     # ── Gate on confidence ────────────────────────────────────────────────────
     if confidence < settings.min_confidence:
         logger.info(
@@ -346,6 +364,17 @@ async def predict_market(
         logger.info(
             "Edge too small (YES=%.3f, NO=%.3f) — skipping '%s'",
             yes_edge, no_edge, market.question[:60],
+        )
+        return None
+
+    # ── Direction check: don't trade against an explicit LLM call ──────────────
+    # If the model explicitly recommended one side and our edge points the other
+    # way, the math and the reasoning disagree on direction — skip rather than
+    # override the AI.
+    if rec in ("YES", "NO") and rec != side.value:
+        logger.info(
+            "LLM recommended %s but edge points %s — conflicting direction, "
+            "skipping '%s'", rec, side.value, market.question[:60],
         )
         return None
 

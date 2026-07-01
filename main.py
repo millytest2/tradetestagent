@@ -208,14 +208,32 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     RESERVE_FLOOR = 1.0  # stop trading once available drops below $1
     if not use_mock and settings.live_exchange.lower() in ("polymarket_us", "polymarketus", "pmus"):
         try:
-            from integrations.polymarket_us import get_balance
+            from integrations.polymarket_us import get_account_balances
             from core.database import get_committed_capital
-            wallet = await get_balance()
+            bals = await get_account_balances()
+            total = bals.get("total")   # account equity incl. open positions
+            cash = bals.get("cash")     # spendable USDC
             committed = get_committed_capital()
-            live_bankroll = max(0.0, wallet - committed)
+            # Spendable base: prefer exchange-reported cash, else total equity,
+            # else the configured bankroll.
+            if cash is not None:
+                spendable = cash
+            elif total is not None:
+                spendable = total
+            else:
+                spendable = settings.bankroll_usdc
+            # Never spend more than (equity − capital already locked in our open
+            # positions). If the exchange gave only one figure, subtract our
+            # known committed capital as a safety belt so we can't overcommit.
+            if total is not None:
+                spendable = min(spendable, max(0.0, total - committed))
+            else:
+                spendable = max(0.0, spendable - committed)
+            live_bankroll = spendable
             console.print(
-                f"  [dim]Wallet: ${wallet:.2f} | committed (open): "
-                f"${committed:.2f} | available: ${live_bankroll:.2f}[/dim]"
+                f"  [dim]Equity: {('$%.2f' % total) if total is not None else 'n/a'} | "
+                f"cash: {('$%.2f' % cash) if cash is not None else 'n/a'} | "
+                f"committed(open): ${committed:.2f} | available: ${live_bankroll:.2f}[/dim]"
             )
             if live_bankroll < RESERVE_FLOOR:
                 console.print(
