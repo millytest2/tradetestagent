@@ -41,21 +41,21 @@ class Settings(BaseSettings):
     # ── Trading Parameters ────────────────────────────────────────────────────
     bankroll_usdc: float = Field(default=1000.0, ge=1.0)
     kelly_fraction: float = Field(default=0.35, ge=0.01, le=1.0)   # bumped 0.25→0.35 for slightly more conviction
-    min_edge: float = Field(default=0.04, ge=0.0, le=1.0)    # QUALITY: require a genuine edge
-    max_open_positions: int = Field(default=8, ge=1, le=100) # SAFETY STOP: cap total open positions across cycles
-    fee_buffer: float = Field(default=0.02, ge=0.0, le=0.5)  # QUALITY: cushion for exchange fees
+    min_edge: float = Field(default=0.02, ge=0.0, le=1.0)    # LEARNING BOOTSTRAP: looser so fast-settling trades place
+    max_open_positions: int = Field(default=12, ge=1, le=100) # headroom for ~4 more near-term positions
+    fee_buffer: float = Field(default=0.02, ge=0.0, le=0.5)  # cushion for exchange fees
     pause_new_trades: bool = Field(default=False)  # KILL SWITCH: hold all open positions, open nothing new
     favorite_price_floor: float = Field(default=0.70, ge=0.5, le=0.95)  # "obvious win" strong-favorite threshold
 
     # ── Position management (SELL / exit rules on open positions) ──────────────
     stop_loss_pct: float = Field(default=0.40, ge=0.0, le=1.0)    # exit if position value falls 40% from entry
     take_profit_pct: float = Field(default=0.60, ge=0.0, le=5.0)  # lock in if position value rises 60% from entry
-    min_confidence: float = Field(default=0.50, ge=0.30, le=1.0)  # QUALITY: require real conviction
+    min_confidence: float = Field(default=0.45, ge=0.30, le=1.0)  # LEARNING BOOTSTRAP: looser so fast-settling trades place
     max_bet_fraction: float = Field(default=0.15, ge=0.001, le=0.5)   # bumped 0.10→0.15 cap per bet
     min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out
-    min_time_to_resolution_days: int = Field(default=7, ge=0)    # no near-term/next-day resolutions
+    min_time_to_resolution_days: int = Field(default=1, ge=0)    # LEARNING BOOTSTRAP: allow next-few-days markets so they settle fast
 
     # ── Infrastructure ────────────────────────────────────────────────────────
     database_url: str = "sqlite:///./tradetestagent.db"

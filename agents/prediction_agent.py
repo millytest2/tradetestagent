@@ -329,9 +329,12 @@ async def predict_market(
     # only a genuinely strong quantitative signal can still get through.
     rec = (recommendation or "PASS").upper()
     if rec == "PASS":
-        confidence = max(0.0, confidence - 0.12)
+        # LEARNING BOOTSTRAP: soften the PASS penalty (was 0.12) so fast-settling
+        # trades still place and feed the learning loop. Re-tighten once the
+        # model has real settled data to train on.
+        confidence = max(0.0, confidence - 0.05)
         logger.info(
-            "LLM recommended PASS — confidence −0.12 → %.2f for '%s'",
+            "LLM recommended PASS — confidence −0.05 → %.2f for '%s'",
             confidence, market.question[:60],
         )
 
