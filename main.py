@@ -228,21 +228,17 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             total = bals.get("total")   # account equity incl. open positions
             cash = bals.get("cash")     # spendable USDC
             committed = get_committed_capital()
-            # Spendable base: prefer exchange-reported cash, else total equity,
-            # else the configured bankroll.
+            # Spendable base:
+            #  • exchange-reported CASH already excludes capital locked in open
+            #    positions — use it directly (do NOT subtract committed again).
+            #  • else fall back to total equity MINUS our committed capital.
+            #  • else the configured bankroll minus committed.
             if cash is not None:
-                spendable = cash
+                spendable = max(0.0, cash)
             elif total is not None:
-                spendable = total
+                spendable = max(0.0, total - committed)
             else:
-                spendable = settings.bankroll_usdc
-            # Never spend more than (equity − capital already locked in our open
-            # positions). If the exchange gave only one figure, subtract our
-            # known committed capital as a safety belt so we can't overcommit.
-            if total is not None:
-                spendable = min(spendable, max(0.0, total - committed))
-            else:
-                spendable = max(0.0, spendable - committed)
+                spendable = max(0.0, settings.bankroll_usdc - committed)
             live_bankroll = spendable
             console.print(
                 f"  [dim]Equity: {('$%.2f' % total) if total is not None else 'n/a'} | "
@@ -317,9 +313,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         )
 
         # Step 4: Risk + Execution (sized off remaining available balance)
-        decision = await evaluate_and_trade(
-            flagged_market, prediction, bankroll_usdc=running_bankroll, dry_run=dry_run
-        )
+        try:
+            decision = await evaluate_and_trade(
+                flagged_market, prediction, bankroll_usdc=running_bankroll, dry_run=dry_run
+            )
+        except RuntimeError as e:
+            # Circuit breaker (or a hard risk stop) raised — pause cleanly for
+            # the rest of this cycle instead of crashing the whole run.
+            console.print(f"  [red]⏸ Trading halted: {e}[/red]")
+            break
 
         if decision.approved:
             sz = decision.sizing
@@ -389,6 +391,7 @@ async def _report_unrealized_pnl() -> float:
     rows = []   # (unrealized_pct, slug, entry, cur, pnl)
     for tid, slug, side_str, shares, bet, entry in open_pos:
         bet = bet or 0.0
+        entry = entry or 0.0   # guard null entry_price (would crash formatting/pct)
         total_cost += bet
         cur = await get_current_price(slug, side_str)
         if cur is None:
@@ -481,7 +484,7 @@ async def _manage_open_positions(dry_run: bool = True) -> int:
     for tid, slug, side_str, shares, bet, entry in open_pos:
         side = MarketSide.YES if side_str == "YES" else MarketSide.NO
         cur = await get_current_price(slug, side_str)
-        if cur is None or entry <= 0:
+        if cur is None or not entry or entry <= 0:
             continue  # can't price it → HOLD
         change = (cur - entry) / entry        # +ve = winning, -ve = losing
         # HOLD unless it crosses a stop-loss or take-profit band

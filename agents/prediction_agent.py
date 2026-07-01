@@ -338,18 +338,12 @@ async def predict_market(
             confidence, market.question[:60],
         )
 
-    # ── Gate on confidence ────────────────────────────────────────────────────
-    if confidence < settings.min_confidence:
-        logger.info(
-            "Confidence %.2f < %.2f threshold — skipping '%s'",
-            confidence, settings.min_confidence, market.question[:60],
-        )
-        return None
-
     # ── Determine side and edge ────────────────────────────────────────────────
     # Require the edge to clear BOTH the minimum edge AND the exchange fee, so
     # we don't take trades whose edge is eaten by fees (Polymarket US markets
     # carry a fee coefficient ~0.05). edge_floor protects against bleeding.
+    # (Done BEFORE the confidence gate so the consensus/favorite boost below can
+    # legitimately help a strong, confirmed setup clear the gate.)
     edge_floor = settings.min_edge + settings.fee_buffer
     yes_edge = calibrated - market.yes_price
     no_edge = (1 - calibrated) - market.no_price
@@ -381,32 +375,12 @@ async def predict_market(
         )
         return None
 
-    # ── Longshot guardrail ─────────────────────────────────────────────────────
-    # Buying a cheap longshot (market_price ≤ 0.20) on a thin edge is usually a
-    # trap: on rare events our probability estimate is unreliable — a few points
-    # of calibration error dwarfs the whole edge — and the crowd's favorite-
-    # longshot bias means longshots are typically OVER-priced, not under. So on a
-    # sub-20¢ side, demand an edge worth at least half the price AND above-
-    # threshold confidence before betting; otherwise skip.
-    if market_price <= 0.20:
-        needed_edge = max(edge_floor, 0.5 * market_price)
-        if edge < needed_edge or confidence < settings.min_confidence + 0.10:
-            logger.info(
-                "Longshot guardrail: %s at %.3f needs edge≥%.3f and conf≥%.2f — "
-                "got edge=%.3f conf=%.2f — skipping '%s'",
-                side.value, market_price, needed_edge,
-                settings.min_confidence + 0.10, edge, confidence,
-                market.question[:60],
-            )
-            return None
-
     # ── High-conviction consensus ("spot the obvious wins") ────────────────────
     # A genuinely strong setup is one where INDEPENDENT signals converge on the
     # same side — not merely a high market price. When the LLM explicitly backs
-    # this side (not PASS) and/or whale order-flow agrees, nudge confidence up so
-    # the conviction-scaled Kelly in the risk agent sizes the bet larger. This is
-    # how the bot presses its best, best-confirmed opportunities without blindly
-    # chasing favorites.
+    # this side (not PASS) and/or whale order-flow agrees, nudge confidence up.
+    # This runs BEFORE the confidence gate so a confirmed favorite/consensus can
+    # clear it, AND it feeds the conviction-scaled Kelly so the bet sizes larger.
     consensus: list[str] = []
     if rec == side.value:                      # LLM explicitly recommended this side
         confidence = min(1.0, confidence + 0.10)
@@ -427,6 +401,33 @@ async def predict_market(
             "Consensus backing %s (%s) — confidence → %.2f for '%s'",
             side.value, "+".join(consensus), confidence, market.question[:60],
         )
+
+    # ── Gate on confidence (sees the consensus boost above) ────────────────────
+    if confidence < settings.min_confidence:
+        logger.info(
+            "Confidence %.2f < %.2f threshold — skipping '%s'",
+            confidence, settings.min_confidence, market.question[:60],
+        )
+        return None
+
+    # ── Longshot guardrail ─────────────────────────────────────────────────────
+    # Buying a cheap longshot (market_price ≤ 0.20) on a thin edge is usually a
+    # trap: on rare events our probability estimate is unreliable — a few points
+    # of calibration error dwarfs the whole edge — and the crowd's favorite-
+    # longshot bias means longshots are typically OVER-priced, not under. So on a
+    # sub-20¢ side, demand an edge worth at least half the price AND above-
+    # threshold confidence before betting; otherwise skip.
+    if market_price <= 0.20:
+        needed_edge = max(edge_floor, 0.5 * market_price)
+        if edge < needed_edge or confidence < settings.min_confidence + 0.10:
+            logger.info(
+                "Longshot guardrail: %s at %.3f needs edge≥%.3f and conf≥%.2f — "
+                "got edge=%.3f conf=%.2f — skipping '%s'",
+                side.value, market_price, needed_edge,
+                settings.min_confidence + 0.10, edge, confidence,
+                market.question[:60],
+            )
+            return None
 
     prediction = Prediction(
         market_id=market.condition_id,

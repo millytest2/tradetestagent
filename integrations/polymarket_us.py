@@ -624,22 +624,27 @@ async def place_trade(
 
     # Buy the side we believe in. The US API expresses direction via intent.
     intent = "ORDER_INTENT_BUY_LONG" if side == MarketSide.YES else "ORDER_INTENT_BUY_SHORT"
+    exec_price = max(0.01, min(0.99, price))
+    price_str = f"{exec_price:.2f}"
     # contracts: each ~$1 max payout; quantity = dollars / price
-    quantity = max(1, int(bet_usdc / max(price, 0.01)))
-    price_str = f"{max(0.01, min(0.99, price)):.2f}"
+    quantity = max(1, int(bet_usdc / max(exec_price, 0.01)))
+    # ACTUAL dollars committed = contracts × price (differs from the intended
+    # bet_usdc because of the integer-contract rounding). Record the real cost so
+    # committed-capital accounting and the wallet guard stay accurate.
+    actual_cost = round(quantity * exec_price, 2)
     client_oid = str(uuid.uuid4())
 
     if dry_run:
         logger.info(
             "[DRY RUN] Polymarket US: %s %s | %d @ $%s (~$%.2f)",
-            intent, slug, quantity, price_str, bet_usdc,
+            intent, slug, quantity, price_str, actual_cost,
         )
         return Trade(
             market_id=condition_id,
             question=slug,
             side=side,
-            entry_price=price,
-            bet_usdc=bet_usdc,
+            entry_price=exec_price,
+            bet_usdc=actual_cost,
             shares=float(quantity),
             status=TradeStatus.PLACED,
             tx_hash=f"pmus_dry_{client_oid[:12]}",
@@ -669,8 +674,8 @@ async def place_trade(
             market_id=condition_id,
             question=slug,
             side=side,
-            entry_price=price,
-            bet_usdc=bet_usdc,
+            entry_price=exec_price,
+            bet_usdc=actual_cost,
             shares=float(quantity),
             status=TradeStatus.PLACED,
             tx_hash=str(order_id),

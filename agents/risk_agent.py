@@ -148,9 +148,11 @@ def _check_risk(
     Run a battery of risk checks.
     Returns (approved: bool, reason: str).
     """
-    # 1. Edge too small
-    if prediction.edge < settings.min_edge:
-        return False, f"Edge {prediction.edge:.3f} below minimum {settings.min_edge}"
+    # 1. Edge too small — final gate uses the FEE-AWARE floor so a trade whose
+    #    edge is eaten by fees can't slip through even if built directly.
+    edge_floor = settings.min_edge + settings.fee_buffer
+    if prediction.edge < edge_floor:
+        return False, f"Edge {prediction.edge:.3f} below fee-aware floor {edge_floor:.3f}"
 
     # 2. Confidence too low
     if prediction.confidence < settings.min_confidence:
@@ -214,8 +216,22 @@ async def evaluate_and_trade(
     Returns:
         TradeDecision with approval status and optional trade details.
     """
-    bankroll = bankroll_usdc or settings.bankroll_usdc
+    # Use the passed bankroll when provided (including a real 0.0 — do NOT let
+    # `or` fall through to the configured default, which would size a huge bet
+    # off an empty wallet). Fall back to config only when None.
+    bankroll = bankroll_usdc if bankroll_usdc is not None else settings.bankroll_usdc
     market = flagged.market
+    if bankroll <= 0:
+        return TradeDecision(
+            approved=False,
+            rejection_reason="No spendable bankroll",
+            prediction=prediction,
+            sizing=compute_bet_sizing(
+                win_prob=prediction.calibrated_yes_probability,
+                market_price=flagged.market.yes_price,
+                bankroll_usdc=0.0,
+            ),
+        )
 
     # Skip if we already have an open position on this market
     from core.database import SessionLocal, TradeRow
