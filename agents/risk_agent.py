@@ -171,9 +171,10 @@ def _check_risk(
             f"${max_allowed:.2f} ({settings.max_bet_fraction:.0%} of bankroll)"
         )
 
-    # 5. Bankroll too small for minimum bet
-    if sizing.bet_usdc < 1.0:
-        return False, f"Computed bet ${sizing.bet_usdc:.2f} below $1.00 dust threshold"
+    # 5. Below the dust threshold (matches utils/kelly.py — small bets still
+    #    execute during the learning phase; sizing already zeroes true dust).
+    if sizing.bet_usdc < 0.25:
+        return False, f"Computed bet ${sizing.bet_usdc:.2f} below $0.25 dust threshold"
 
     # 6. Guard against betting more than 50% of bankroll on a single trade
     if sizing.bet_usdc > bankroll * 0.50:
@@ -255,14 +256,26 @@ async def evaluate_and_trade(
         bankroll_usdc=bankroll,
     )
 
-    # Apply dynamic Kelly multiplier (hot/cold streak adjustment)
+    # ── Sizing multipliers ────────────────────────────────────────────────────
+    # (a) Streak multiplier — press on hot streaks, pull back on cold ones.
+    # (b) Conviction scaling — Kelly assumes the win probability is known
+    #     exactly, but ours is an estimate; scale by prediction confidence
+    #     (floored at 0.5x so low-conviction trades still place small and keep
+    #     feeding the learning loop).
     kelly_mult = _dynamic_kelly_multiplier()
-    if kelly_mult != 1.0:
+    conf_scale = 0.5 + 0.5 * min(1.0, max(0.0, prediction.confidence))
+    conviction_mult = kelly_mult * conf_scale
+    if conviction_mult != 1.0:
         adjusted_bet = min(
-            sizing.bet_usdc * kelly_mult,
+            sizing.bet_usdc * conviction_mult,
             bankroll * settings.max_bet_fraction,
         )
         sizing = sizing.model_copy(update={"bet_usdc": max(0.0, adjusted_bet)})
+        logger.info(
+            "Sizing: streak=%.2fx × conviction=%.2fx (conf=%.2f) = %.2fx → $%.2f",
+            kelly_mult, conf_scale, prediction.confidence, conviction_mult,
+            sizing.bet_usdc,
+        )
 
     logger.info(
         "Risk check — side=%s, win_prob=%.3f, market_p=%.3f, "
@@ -298,7 +311,13 @@ async def evaluate_and_trade(
                 bankroll_usdc=bankroll,
                 kelly_override=variant.kelly_fraction,
             )
-            sizing = sizing.model_copy(update={"bet_usdc": variant_sizing.bet_usdc})
+            # Preserve the streak + conviction multipliers through the variant
+            # recompute — otherwise A/B sizing would silently discard them.
+            variant_bet = min(
+                variant_sizing.bet_usdc * conviction_mult,
+                bankroll * settings.max_bet_fraction,
+            )
+            sizing = sizing.model_copy(update={"bet_usdc": max(0.0, variant_bet)})
 
     # ── Execute trade ─────────────────────────────────────────────────────────
     logger.info(

@@ -274,11 +274,28 @@ async def predict_market(
                 )
                 return None
 
-    # ── Ensemble ──────────────────────────────────────────────────────────────
-    # Weight XGBoost more heavily when it has training data
-    xgb_weight = 0.60 if calibrator.is_trained else 0.40
-    llm_weight = 1.0 - xgb_weight
+    # ── Ensemble (confidence-weighted) ────────────────────────────────────────
+    # Base split: trust XGBoost more once it has real training data. Then tilt
+    # toward the LLM when it's confident and back toward XGBoost when it's not,
+    # so a hesitant LLM can't drag the estimate around on its own.
+    base_xgb_weight = 0.60 if calibrator.is_trained else 0.40
+    conf_tilt = (confidence - 0.5) * 0.30            # ±0.15 at confidence extremes
+    llm_weight = min(0.85, max(0.15, (1.0 - base_xgb_weight) + conf_tilt))
+    xgb_weight = 1.0 - llm_weight
     calibrated = xgb_weight * xgb_prob + llm_weight * llm_prob
+
+    # ── Model-disagreement dampener ───────────────────────────────────────────
+    # When XGBoost and the LLM strongly disagree, the ensemble estimate is less
+    # trustworthy — cut confidence so contested signals size down (via the
+    # conviction-scaled Kelly in the risk agent) or fail the confidence gate.
+    disagreement = abs(xgb_prob - llm_prob)
+    if disagreement > 0.20:
+        penalty = min(0.20, (disagreement - 0.20) * 0.5)
+        confidence = max(0.0, confidence - penalty)
+        logger.info(
+            "Model disagreement %.2f (xgb=%.3f vs llm=%.3f) — confidence −%.2f → %.2f",
+            disagreement, xgb_prob, llm_prob, penalty, confidence,
+        )
 
     # ── Contra-indicator: fade when extreme sentiment is already priced in ────
     # If everyone is extremely bullish AND the market already prices YES high,
