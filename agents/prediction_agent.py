@@ -378,6 +378,25 @@ async def predict_market(
         )
         return None
 
+    # ── Longshot guardrail ─────────────────────────────────────────────────────
+    # Buying a cheap longshot (market_price ≤ 0.20) on a thin edge is usually a
+    # trap: on rare events our probability estimate is unreliable — a few points
+    # of calibration error dwarfs the whole edge — and the crowd's favorite-
+    # longshot bias means longshots are typically OVER-priced, not under. So on a
+    # sub-20¢ side, demand an edge worth at least half the price AND above-
+    # threshold confidence before betting; otherwise skip.
+    if market_price <= 0.20:
+        needed_edge = max(edge_floor, 0.5 * market_price)
+        if edge < needed_edge or confidence < settings.min_confidence + 0.10:
+            logger.info(
+                "Longshot guardrail: %s at %.3f needs edge≥%.3f and conf≥%.2f — "
+                "got edge=%.3f conf=%.2f — skipping '%s'",
+                side.value, market_price, needed_edge,
+                settings.min_confidence + 0.10, edge, confidence,
+                market.question[:60],
+            )
+            return None
+
     prediction = Prediction(
         market_id=market.condition_id,
         question=market.question,
