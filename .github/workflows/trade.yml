@@ -63,6 +63,8 @@ jobs:
           MIN_EDGE: "0.0"                # FAVORITES MODE: back favorites even near fair value (win-rate priority)
           FEE_BUFFER: "0.0"
           MIN_ENTRY_PRICE: "0.68"        # FAVORITES MODE: only bet sides priced >= 68% → targets ~70% win rate
+          MIN_TIME_TO_RESOLUTION_DAYS: "0"   # allow markets resolving today
+          MAX_TIME_TO_RESOLUTION_DAYS: "4"   # ...through ~Friday, so they settle fast and feed learning
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll
           MAX_BET_FRACTION: "0.25"       # per-bet cap raised to 25% (conviction scaling keeps weak bets small)
           MAX_OPEN_POSITIONS: "14"       # headroom for ~5 more positions (9 open now)

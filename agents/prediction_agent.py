@@ -59,6 +59,22 @@ def _build_features(
     )
 
 
+def _signal_probability(features: PredictionFeatures, market_yes_price: float) -> float:
+    """
+    Third, INDEPENDENT probability estimate (the '2-of-3' cross-check lever).
+
+    Deliberately NOT model-based — it starts from the market's own price and
+    tilts it by smart-money (whale order flow), narrative (sentiment) and
+    momentum (24h move). Because it uses different inputs than XGBoost (features)
+    and the LLM (reasoning), it's a genuinely independent vote on P(YES).
+    """
+    p = market_yes_price
+    p += 0.10 * features.whale_bid_imbalance     # whales stacking YES → higher
+    p += 0.06 * features.compound_sentiment      # bullish narrative → higher
+    p += 0.30 * features.price_change_24h        # upward momentum → higher
+    return max(0.02, min(0.98, p))
+
+
 # ── LLM calibration ───────────────────────────────────────────────────────────
 
 def _build_llm_prompt(
@@ -361,6 +377,25 @@ async def predict_market(
         logger.info(
             "Edge too small (YES=%.3f, NO=%.3f) — skipping '%s'",
             yes_edge, no_edge, market.question[:60],
+        )
+        return None
+
+    # ── Second lever: 2-of-3 independent vote ──────────────────────────────────
+    # Require at least 2 of the 3 INDEPENDENT estimators (XGBoost, LLM, market-
+    # signal) to agree there's edge on our side before we bet. One model being
+    # wrong can no longer carry a trade on its own. All three are P(YES).
+    signal_prob = _signal_probability(features, market.yes_price)
+    estimators = [xgb_prob, llm_prob, signal_prob]
+    if side == MarketSide.YES:
+        agree = sum(1 for e in estimators if e >= market.yes_price)
+    else:
+        agree = sum(1 for e in estimators if e <= market.yes_price)
+    if agree < 2:
+        logger.info(
+            "2-of-3 vote failed (%d/3 agree on %s; xgb=%.2f llm=%.2f sig=%.2f vs %.2f) "
+            "— skipping '%s'",
+            agree, side.value, xgb_prob, llm_prob, signal_prob, market.yes_price,
+            market.question[:60],
         )
         return None
 

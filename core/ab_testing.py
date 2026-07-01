@@ -35,30 +35,33 @@ class StrategyVariant:
     whale_weight: float       # 0-1 weight on whale signal
     llm_weight: float         # LLM weight in ensemble (1 - this = XGBoost weight)
     contra_indicator: bool    # fade extreme sentiment against market price
+    use_drawdown_governor: bool = True   # A/B-tested: shrink bets while in drawdown
 
 
 VARIANT_A = StrategyVariant(
     name="A",
-    label="Conservative Baseline",
+    label="Governed (drawdown-protected)",
     min_edge=0.06,
     min_confidence=0.62,
-    kelly_fraction=0.20,
+    kelly_fraction=0.35,          # sizeable, but capital-protected
     sentiment_weight=0.50,
     whale_weight=0.30,
     llm_weight=0.60,
     contra_indicator=True,
+    use_drawdown_governor=True,   # applies the drawdown governor
 )
 
 VARIANT_B = StrategyVariant(
     name="B",
-    label="Aggressive Edge-Seeker",
+    label="Aggressive (ungoverned)",
     min_edge=0.04,
     min_confidence=0.58,
-    kelly_fraction=0.30,
+    kelly_fraction=0.50,          # bigger bets, no drawdown throttle
     sentiment_weight=0.40,
     whale_weight=0.50,
     llm_weight=0.70,
     contra_indicator=False,
+    use_drawdown_governor=False,  # stays aggressive through drawdowns
 )
 
 VARIANTS = {"A": VARIANT_A, "B": VARIANT_B}
@@ -158,7 +161,7 @@ def analyze_variants() -> dict:
                 b["wins"] += 1
             else:
                 b["losses"] += 1
-            b["pnl"] += row.pnl_usd or 0.0
+            b["pnl"] += row.pnl_usdc or 0.0
         except Exception:
             continue
 

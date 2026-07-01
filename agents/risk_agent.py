@@ -137,6 +137,25 @@ def _dynamic_kelly_multiplier() -> float:
         return 1.0
 
 
+def _drawdown_governor() -> float:
+    """
+    Second sizing lever: shrink bets while the account is in a REALIZED
+    drawdown, to protect capital exactly when the strategy is losing. Returns a
+    multiplier in [0.4, 1.0]. At break-even or better it's 1.0 (no effect); a
+    10% realized loss on the configured bankroll → ~0.9, a 30% loss → ~0.7,
+    floored at 0.4 so it never fully stops.
+    """
+    try:
+        stats = get_trade_stats()
+        realized = stats.get("total_pnl_usdc", 0.0)
+        if realized >= 0:
+            return 1.0
+        start = max(1.0, settings.bankroll_usdc)
+        return max(0.4, min(1.0, 1.0 + realized / start))
+    except Exception:
+        return 1.0
+
+
 # ── Risk checks ───────────────────────────────────────────────────────────────
 
 def _check_risk(
@@ -314,10 +333,12 @@ async def evaluate_and_trade(
 
     # ── A/B variant assignment ─────────────────────────────────────────────────
     ab_variant = "A"
+    use_governor = True   # default when A/B is disabled
     if settings.ab_testing_enabled:
         from core.ab_testing import get_variant_for_trade
         variant = get_variant_for_trade()
         ab_variant = variant.name
+        use_governor = getattr(variant, "use_drawdown_governor", True)
         # Apply variant-specific parameters
         if sizing.bet_usdc > 0:
             from utils.kelly import compute_bet_sizing as _cbs
@@ -334,6 +355,18 @@ async def evaluate_and_trade(
                 bankroll * settings.max_bet_fraction,
             )
             sizing = sizing.model_copy(update={"bet_usdc": max(0.0, variant_bet)})
+
+    # ── Second sizing lever: drawdown governor (A/B-tested) ────────────────────
+    # Variant A applies it (shrinks bets when the account is in a realized
+    # drawdown); Variant B skips it (stays aggressive). Real A/B data then shows
+    # whether the governor improves results.
+    if use_governor:
+        governor = _drawdown_governor()
+        if governor < 1.0 and sizing.bet_usdc > 0:
+            sizing = sizing.model_copy(
+                update={"bet_usdc": max(0.0, sizing.bet_usdc * governor)}
+            )
+            logger.info("Drawdown governor: ×%.2f → bet=$%.2f", governor, sizing.bet_usdc)
 
     # ── Execute trade ─────────────────────────────────────────────────────────
     logger.info(
