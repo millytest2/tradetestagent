@@ -59,16 +59,17 @@ jobs:
           LIVE_EXCHANGE: polymarket_us
           BANKROLL_USDC: "98.0"          # fallback only — real wallet balance is fetched live each cycle
           AB_TESTING_ENABLED: "true"
-          MIN_CONFIDENCE: "0.45"         # LEARNING BOOTSTRAP: looser so fast-settling trades place
-          MIN_EDGE: "0.02"               # LEARNING BOOTSTRAP: looser edge bar
-          FEE_BUFFER: "0.02"             # cushion for exchange fees
+          MIN_CONFIDENCE: "0.40"         # FAVORITES MODE: loose so favorites actually place
+          MIN_EDGE: "0.0"                # FAVORITES MODE: back favorites even near fair value (win-rate priority)
+          FEE_BUFFER: "0.0"
+          MIN_ENTRY_PRICE: "0.68"        # FAVORITES MODE: only bet sides priced >= 68% → targets ~70% win rate
           KELLY_FRACTION: "0.35"         # slightly bumped conviction sizing
           MAX_BET_FRACTION: "0.15"       # per-bet cap (15% of available)
-          MAX_OPEN_POSITIONS: "12"       # headroom for ~4 more near-term positions (was 8)
+          MAX_OPEN_POSITIONS: "14"       # headroom for ~5 more positions (9 open now)
           PAUSE_NEW_TRADES: "false"      # flip to "true" to hold positions and open nothing new
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
-        run: python main.py --live --run-once --max-trades 4 --top-n 25
+        run: python main.py --live --run-once --max-trades 5 --top-n 25
 
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"

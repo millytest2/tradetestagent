@@ -364,6 +364,17 @@ async def predict_market(
         )
         return None
 
+    # ── Favorites mode: only bet strong favorites (targets a high win rate) ────
+    # The side we'd buy must be priced at/above the entry floor. This is what
+    # produces a ~70% win rate — we only back likely outcomes — at the cost of
+    # small per-win payouts. Off (0.0) by default; set MIN_ENTRY_PRICE to enable.
+    if market_price < settings.min_entry_price:
+        logger.info(
+            "Favorites mode: %s at %.3f below entry floor %.2f — skipping '%s'",
+            side.value, market_price, settings.min_entry_price, market.question[:60],
+        )
+        return None
+
     # ── Direction check: don't trade against an explicit LLM call ──────────────
     # If the model explicitly recommended one side and our edge points the other
     # way, the math and the reasoning disagree on direction — skip rather than
