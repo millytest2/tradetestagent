@@ -44,12 +44,17 @@ jobs:
           NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
           NOTIFY_FROM_EMAIL: ${{ secrets.NOTIFY_FROM_EMAIL }}
           NOTIFY_SMTP_PASSWORD: ${{ secrets.NOTIFY_SMTP_PASSWORD }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
           LIVE_EXCHANGE: polymarket_us
-          BANKROLL_USDC: "98.0"          # real wallet balance — sizing scales off this
+          BANKROLL_USDC: "98.0"          # fallback only — real wallet balance is fetched live each cycle
           AB_TESTING_ENABLED: "true"
           MIN_CONFIDENCE: "0.40"         # TEST: lowered so it actually trades
           MIN_EDGE: "0.0"                # TEST: trade on any edge (AI agrees w/ market otherwise)
           FEE_BUFFER: "0.0"              # TEST: fees ignored per request
+          KELLY_FRACTION: "0.35"         # slightly bumped conviction sizing
+          MAX_BET_FRACTION: "0.15"       # per-bet cap (15% of available)
           MAX_OPEN_POSITIONS: "8"        # SAFETY STOP across cycles
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"

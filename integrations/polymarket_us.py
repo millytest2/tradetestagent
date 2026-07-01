@@ -346,27 +346,113 @@ async def check_settlement(slug: str):
         return None
 
 
+def _coerce_balance(bal) -> float | None:
+    """Pull a USD number out of whatever shape the SDK/REST returns."""
+    if bal is None:
+        return None
+    # Object with an attribute
+    for attr in ("available", "available_balance", "cash", "usd", "balance", "value"):
+        v = getattr(bal, attr, None)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                pass
+    # Dict payload
+    if isinstance(bal, dict):
+        for k in ("available", "availableBalance", "available_balance",
+                  "cash", "usd", "balance", "value"):
+            if bal.get(k) is not None:
+                try:
+                    return float(bal[k])
+                except (TypeError, ValueError):
+                    pass
+    # Bare number
+    try:
+        return float(bal)
+    except (TypeError, ValueError):
+        return None
+
+
 async def get_balance() -> float:
-    """Return USD balance on the Polymarket US account."""
+    """Return the real USD balance on the Polymarket US account.
+
+    Tries several SDK access patterns, then a raw authenticated REST call, and
+    only falls back to the configured bankroll if all of those fail. The real
+    value matters: it's what stops the bot from over-committing the wallet.
+    """
+    # 1) SDK — probe the common account/portfolio accessors.
     try:
         client = _client()
-        # SDK method name varies — try the common ones, else fall back quietly
         bal = None
-        for getter in ("balance", "get_balance", "get"):
-            acct = getattr(client, "account", None) or getattr(client, "portfolio", None)
-            if acct and hasattr(acct, getter):
-                bal = getattr(acct, getter)()
+        for holder_name in ("account", "portfolio", "wallet"):
+            holder = getattr(client, holder_name, None)
+            if holder is None:
+                continue
+            for getter in ("balance", "get_balance", "balances", "get"):
+                fn = getattr(holder, getter, None)
+                if callable(fn):
+                    try:
+                        bal = fn()
+                        break
+                    except Exception:
+                        continue
+            if bal is not None:
                 break
-        client.close()
-        if bal is None:
-            return settings.bankroll_usdc
-        val = getattr(bal, "available", None)
-        if val is None and isinstance(bal, dict):
-            val = bal.get("available") or bal.get("balance")
-        return float(val) if val is not None else settings.bankroll_usdc
+        try:
+            client.close()
+        except Exception:
+            pass
+        val = _coerce_balance(bal)
+        if val is not None and val > 0:
+            logger.info("Polymarket US live balance (SDK): $%.2f", val)
+            return val
     except Exception as e:
-        logger.debug("Balance fetch unavailable, using configured bankroll: %s", e)
-        return settings.bankroll_usdc
+        logger.debug("SDK balance probe failed: %s", e)
+
+    # 2) Raw authenticated REST fallback against api.polymarket.us.
+    try:
+        val = await _rest_balance()
+        if val is not None and val > 0:
+            logger.info("Polymarket US live balance (REST): $%.2f", val)
+            return val
+    except Exception as e:
+        logger.debug("REST balance probe failed: %s", e)
+
+    logger.debug("Live balance unavailable — using configured bankroll $%.2f",
+                 settings.bankroll_usdc)
+    return settings.bankroll_usdc
+
+
+async def _rest_balance() -> float | None:
+    """Best-effort authenticated GET for the account balance via the SDK's
+    own signed HTTP session, trying the documented balance endpoints."""
+    client = _client()
+    session = (getattr(client, "session", None)
+               or getattr(client, "_session", None)
+               or getattr(client, "http", None))
+    endpoints = ("/v1/account/balance", "/v1/balance", "/v1/portfolio",
+                 "/v1/account", "/v1/wallet/balance")
+    try:
+        for ep in endpoints:
+            for caller in ("get", "request"):
+                fn = getattr(session, caller, None) if session else None
+                if not callable(fn):
+                    continue
+                try:
+                    resp = fn(ep) if caller == "get" else fn("GET", ep)
+                    data = resp.json() if hasattr(resp, "json") else resp
+                    val = _coerce_balance(data)
+                    if val is not None:
+                        return val
+                except Exception:
+                    continue
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+    return None
 
 
 async def place_trade(

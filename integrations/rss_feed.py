@@ -86,17 +86,70 @@ def _entry_matches(entry: dict, question: str) -> bool:
     return matches >= 2
 
 
+def _extract_query_terms(question: str, max_terms: int = 6) -> str:
+    """Pull the most meaningful keywords out of a market question."""
+    stopwords = {"will", "be", "the", "a", "an", "is", "are", "was", "were", "in",
+                 "on", "at", "to", "of", "for", "by", "with", "this", "that",
+                 "which", "who", "what", "when", "before", "after", "than"}
+    words = [w.strip("?.,!'\"").lower() for w in question.split()]
+    key = [w for w in words if w and w not in stopwords and len(w) > 2]
+    return " ".join(key[:max_terms])
+
+
+async def _fetch_google_news(question: str, client: httpx.AsyncClient,
+                             max_items: int = 10) -> list[SocialPost]:
+    """
+    Query-targeted news search via Google News RSS. Unlike homepage feeds this
+    returns articles specific to THIS market's keywords, and (being a Google
+    endpoint) it isn't IP-blocked on data-center runners the way Reddit is.
+    """
+    terms = _extract_query_terms(question)
+    if not terms:
+        return []
+    from urllib.parse import quote_plus
+    url = (f"https://news.google.com/rss/search?q={quote_plus(terms)}"
+           f"&hl=en-US&gl=US&ceid=US:en")
+    posts: list[SocialPost] = []
+    try:
+        import feedparser
+        resp = await client.get(url, follow_redirects=True)
+        resp.raise_for_status()
+        feed = feedparser.parse(resp.text)
+        for entry in feed.entries[:max_items]:
+            title = entry.get("title", "")
+            summary = (entry.get("summary", "") or "")[:500]
+            text = f"{title}. {summary}".strip(". ")
+            posts.append(SocialPost(
+                source="rss",
+                author=entry.get("source", {}).get("title", "news.google.com")
+                    if isinstance(entry.get("source"), dict) else "news.google.com",
+                text=text,
+                url=entry.get("link", ""),
+                published_at=_parse_rss_date(entry.get("published")),
+            ))
+        logger.info("Google News: %d articles for '%s'", len(posts), terms)
+    except Exception as e:
+        logger.debug("Google News search failed: %s", e)
+    return posts
+
+
 async def search_rss(
     question: str,
     feeds: Optional[list[str]] = None,
     max_per_feed: int = 10,
 ) -> list[SocialPost]:
-    """Search RSS feeds for articles relevant to a market question."""
+    """Search RSS feeds for articles relevant to a market question.
+
+    Combines a query-targeted Google News search (most relevant) with a scan of
+    high-signal homepage feeds (breaking/background context).
+    """
 
     target_feeds = feeds or DEFAULT_FEEDS
     posts: list[SocialPost] = []
 
     async with httpx.AsyncClient(timeout=15) as client:
+        # Query-targeted search first — highest relevance per market.
+        posts.extend(await _fetch_google_news(question, client, max_items=max_per_feed))
         for feed_url in target_feeds:
             try:
                 entries = await _fetch_feed(feed_url, client)

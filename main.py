@@ -201,19 +201,46 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     console.print("[bold]Step 3+4[/bold] Predicting and evaluating risk...")
     trades_placed = 0
 
-    # Size bets off the REAL account balance, not a hardcoded number, so the bot
-    # bets correctly as the bankroll grows or shrinks.
+    # Size bets off the REAL account balance minus capital already locked in
+    # open positions, so the bot never commits more than the wallet holds —
+    # even across many 30-minute cycles.
     live_bankroll = None
+    RESERVE_FLOOR = 1.0  # stop trading once available drops below $1
     if not use_mock and settings.live_exchange.lower() in ("polymarket_us", "polymarketus", "pmus"):
         try:
             from integrations.polymarket_us import get_balance
-            live_bankroll = await get_balance()
-            console.print(f"  [dim]Live balance: ${live_bankroll:.2f}[/dim]")
+            from core.database import get_committed_capital
+            wallet = await get_balance()
+            committed = get_committed_capital()
+            live_bankroll = max(0.0, wallet - committed)
+            console.print(
+                f"  [dim]Wallet: ${wallet:.2f} | committed (open): "
+                f"${committed:.2f} | available: ${live_bankroll:.2f}[/dim]"
+            )
+            if live_bankroll < RESERVE_FLOOR:
+                console.print(
+                    "  [yellow]→ Available balance below $1 — skipping new "
+                    "trades this cycle (managing open positions only).[/yellow]"
+                )
+                top_flagged = []  # no new entries; settlement/exits already ran
         except Exception as e:
             logger.debug("Balance fetch failed, using configured bankroll: %s", e)
 
+    # Running available balance — decremented as trades are placed so a single
+    # cycle can't commit more than the wallet holds.
+    running_bankroll = live_bankroll
+
     for flagged_market, report in zip(top_flagged, reports):
         question = flagged_market.market.question
+
+        # Stop opening positions once this cycle has spent down the wallet.
+        if running_bankroll is not None and running_bankroll < RESERVE_FLOOR:
+            console.print(
+                "  [yellow]→ Available balance spent for this cycle — "
+                "stopping new trades.[/yellow]"
+            )
+            break
+
         console.print(f"  → [dim]{question[:70]}[/dim]")
 
         # Step 3: Prediction
@@ -239,9 +266,9 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             f"| conf={prediction.confidence:.2f}"
         )
 
-        # Step 4: Risk + Execution (sized off real balance when available)
+        # Step 4: Risk + Execution (sized off remaining available balance)
         decision = await evaluate_and_trade(
-            flagged_market, prediction, bankroll_usdc=live_bankroll, dry_run=dry_run
+            flagged_market, prediction, bankroll_usdc=running_bankroll, dry_run=dry_run
         )
 
         if decision.approved:
@@ -252,6 +279,9 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 f"(Kelly={sz.kelly_fraction_used:.3f}, "
                 f"odds={sz.odds:.2f}x)"
             )
+            # Deduct committed capital from the cycle's running balance.
+            if running_bankroll is not None:
+                running_bankroll = max(0.0, running_bankroll - sz.bet_usdc)
             trades_placed += 1
             if max_trades and trades_placed >= max_trades:
                 console.print(

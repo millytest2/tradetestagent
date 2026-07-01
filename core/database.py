@@ -153,6 +153,17 @@ def get_losing_trades(limit: int = 10) -> list[TradeRow]:
         )
 
 
+def get_committed_capital() -> float:
+    """Sum of USDC locked in still-open (PENDING) positions.
+
+    Used to compute *available* bankroll so the bot never commits more than the
+    wallet holds across many cycles.
+    """
+    with get_session() as session:
+        rows = session.query(TradeRow).filter(TradeRow.outcome == "PENDING").all()
+        return float(sum((r.bet_usdc or 0.0) for r in rows))
+
+
 def get_trade_stats() -> dict:
     with get_session() as session:
         total = session.query(TradeRow).count()
