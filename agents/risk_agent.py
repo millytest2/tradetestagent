@@ -171,10 +171,10 @@ def _check_risk(
             f"${max_allowed:.2f} ({settings.max_bet_fraction:.0%} of bankroll)"
         )
 
-    # 5. Below the dust threshold (matches utils/kelly.py — small bets still
-    #    execute during the learning phase; sizing already zeroes true dust).
-    if sizing.bet_usdc < 0.25:
-        return False, f"Computed bet ${sizing.bet_usdc:.2f} below $0.25 dust threshold"
+    # 5. Below the $1 dust threshold (matches utils/kelly.py) — sub-$1 bets are
+    #    meaningless, so block them rather than place a token position.
+    if sizing.bet_usdc < 1.0:
+        return False, f"Computed bet ${sizing.bet_usdc:.2f} below $1.00 dust threshold"
 
     # 6. Guard against betting more than 50% of bankroll on a single trade
     if sizing.bet_usdc > bankroll * 0.50:

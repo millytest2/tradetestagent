@@ -62,10 +62,9 @@ def compute_bet_sizing(
     raw_bet = max(0.0, kf_used * bankroll_usdc)
     bet_usdc = min(raw_bet, max_allowed)
 
-    # Minimum bet (dust threshold). Kept low so small-edge trades on a small
-    # bankroll still clear the floor and execute — we're optimizing for learning
-    # volume in this phase, not fee efficiency.
-    if bet_usdc < 0.25:
+    # Minimum $1 bet (dust threshold). Anything smaller is meaningless — a $0.50
+    # bet does nothing — so zero it out rather than place a token position.
+    if bet_usdc < 1.0:
         bet_usdc = 0.0
 
     return BetSizing(
