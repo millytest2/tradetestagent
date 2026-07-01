@@ -65,6 +65,7 @@ jobs:
           KELLY_FRACTION: "0.35"         # slightly bumped conviction sizing
           MAX_BET_FRACTION: "0.15"       # per-bet cap (15% of available)
           MAX_OPEN_POSITIONS: "8"        # SAFETY STOP across cycles
+          PAUSE_NEW_TRADES: "false"      # flip to "true" to hold positions and open nothing new
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
         run: python main.py --live --run-once --max-trades 5 --top-n 25

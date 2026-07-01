@@ -125,6 +125,20 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 console.print(f"  [yellow]✓ Exited {exited} position(s) on stop-loss/take-profit[/yellow]")
         except Exception as e:
             logger.debug("Position management failed (non-blocking): %s", e)
+        # Real-time P&L: mark open positions to current market so the true
+        # (unrealized) position is visible every cycle, not just at settlement.
+        try:
+            await _report_unrealized_pnl()
+        except Exception as e:
+            logger.debug("Unrealized P&L report failed (non-blocking): %s", e)
+
+    # ── Kill switch: pause opening new positions (still settle/manage/report) ──
+    if settings.pause_new_trades and not use_mock:
+        console.print(
+            "  [yellow]⏸ PAUSE_NEW_TRADES is ON — holding all open positions, "
+            "opening nothing new this cycle.[/yellow]"
+        )
+        return
 
     # ── Step 1: Scan ──────────────────────────────────────────────────────────
     console.print("[bold]Step 1[/bold] Scanning markets...")
@@ -346,6 +360,49 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
 
     # ── Step 5: Postmortems for any settled losses ────────────────────────────
     await _run_pending_postmortems()
+
+
+async def _report_unrealized_pnl() -> float:
+    """
+    Mark every open (PENDING) position to the current market price and print the
+    unrealized P&L, so the true live position is visible each cycle instead of
+    the $0 the ledger shows until a market actually resolves. Returns the total
+    unrealized P&L in USDC.
+    """
+    exchange = settings.live_exchange.lower()
+    if exchange not in ("polymarket_us", "polymarketus", "pmus"):
+        return 0.0
+    from core.database import SessionLocal, TradeRow
+    from integrations.polymarket_us import get_current_price
+
+    with SessionLocal() as s:
+        open_pos = [
+            (r.id, r.market_id, r.side, r.shares, r.bet_usdc, r.entry_price)
+            for r in s.query(TradeRow).filter(TradeRow.outcome == "PENDING").all()
+        ]
+    if not open_pos:
+        return 0.0
+
+    total_cost = 0.0
+    total_value = 0.0
+    priced = 0
+    for tid, slug, side_str, shares, bet, entry in open_pos:
+        total_cost += (bet or 0.0)
+        cur = await get_current_price(slug, side_str)
+        if cur is None:
+            total_value += (bet or 0.0)   # unknown → assume flat (no info)
+            continue
+        total_value += shares * cur
+        priced += 1
+
+    unrealized = total_value - total_cost
+    color = "green" if unrealized >= 0 else "red"
+    console.print(
+        f"  [dim]Open positions: {len(open_pos)} | cost ${total_cost:.2f} | "
+        f"mark ${total_value:.2f} | [/dim][{color}]unrealized ${unrealized:+.2f}[/{color}]"
+        f"[dim] ({priced}/{len(open_pos)} priced)[/dim]"
+    )
+    return unrealized
 
 
 async def _settle_pending_trades() -> int:

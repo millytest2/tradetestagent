@@ -412,6 +412,13 @@ async def predict_market(
     if (side == MarketSide.YES and whale > 0.20) or (side == MarketSide.NO and whale < -0.20):
         confidence = min(1.0, confidence + 0.05)
         consensus.append("whale")
+    # "Obvious win": a strong favorite (our side priced ≥ the favorite floor)
+    # that the model ALSO finds underpriced — the edge already cleared the floor
+    # above, so this is high win-rate AND positive EV, not a fair-priced coin
+    # flip. The LLM must explicitly back the side. Give it extra conviction.
+    if market_price >= settings.favorite_price_floor and rec == side.value:
+        confidence = min(1.0, confidence + 0.08)
+        consensus.append("favorite")
     if consensus:
         logger.info(
             "Consensus backing %s (%s) — confidence → %.2f for '%s'",

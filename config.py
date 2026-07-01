@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     min_edge: float = Field(default=0.04, ge=0.0, le=1.0)    # QUALITY: require a genuine edge
     max_open_positions: int = Field(default=8, ge=1, le=100) # SAFETY STOP: cap total open positions across cycles
     fee_buffer: float = Field(default=0.02, ge=0.0, le=0.5)  # QUALITY: cushion for exchange fees
+    pause_new_trades: bool = Field(default=False)  # KILL SWITCH: hold all open positions, open nothing new
+    favorite_price_floor: float = Field(default=0.70, ge=0.5, le=0.95)  # "obvious win" strong-favorite threshold
 
     # ── Position management (SELL / exit rules on open positions) ──────────────
     stop_loss_pct: float = Field(default=0.40, ge=0.0, le=1.0)    # exit if position value falls 40% from entry

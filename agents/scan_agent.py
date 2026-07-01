@@ -103,9 +103,16 @@ def _priority_score(market: Market, flag_reason: str) -> float:
     else:
         score += 0.25   # long-dated still allowed, slightly deprioritised
 
-    # Penalise extreme prices — harder to find edge near certainty
-    if market.yes_price >= 0.88 or market.yes_price <= 0.12:
-        score -= 1.0
+    # "Obvious win" candidates: strong-but-not-certain favorites (on either
+    # side) are worth surfacing — if our model also finds them underpriced they
+    # win often AND carry positive EV. Only penalise near-certainties where
+    # there's no room left to profit.
+    p = market.yes_price
+    fav_floor = settings.favorite_price_floor
+    if (fav_floor <= p <= 0.93) or (0.07 <= p <= (1.0 - fav_floor)):
+        score += 0.75
+    if p >= 0.96 or p <= 0.04:
+        score -= 1.5
 
     return score
 
