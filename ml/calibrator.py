@@ -52,7 +52,8 @@ FEATURE_COLS = [
     "trend_score",           # Google Trends interest score
 ]
 
-MIN_SAMPLES_FOR_TRAINING = 30
+MIN_SAMPLES_FOR_TRAINING = 15   # start learning sooner on a small account
+                                # (weak early model, refines as more settle)
 
 
 # ── Prior (rule-based fallback) ───────────────────────────────────────────────

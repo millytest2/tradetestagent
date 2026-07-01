@@ -386,14 +386,21 @@ async def _report_unrealized_pnl() -> float:
     total_cost = 0.0
     total_value = 0.0
     priced = 0
+    rows = []   # (unrealized_pct, slug, entry, cur, pnl)
     for tid, slug, side_str, shares, bet, entry in open_pos:
-        total_cost += (bet or 0.0)
+        bet = bet or 0.0
+        total_cost += bet
         cur = await get_current_price(slug, side_str)
         if cur is None:
-            total_value += (bet or 0.0)   # unknown → assume flat (no info)
+            total_value += bet   # unknown → assume flat (no info)
+            rows.append((0.0, slug, entry, None, 0.0))
             continue
-        total_value += shares * cur
+        val = shares * cur
+        total_value += val
         priced += 1
+        pnl = val - bet
+        pct = ((cur - entry) / entry * 100.0) if entry else 0.0
+        rows.append((pct, slug, entry, cur, pnl))
 
     unrealized = total_value - total_cost
     color = "green" if unrealized >= 0 else "red"
@@ -402,6 +409,14 @@ async def _report_unrealized_pnl() -> float:
         f"mark ${total_value:.2f} | [/dim][{color}]unrealized ${unrealized:+.2f}[/{color}]"
         f"[dim] ({priced}/{len(open_pos)} priced)[/dim]"
     )
+    # Per-position breakdown, worst-first, so losers are obvious every run.
+    for pct, slug, entry, cur, pnl in sorted(rows, key=lambda r: r[0]):
+        c = "green" if pnl >= 0 else "red"
+        cur_s = f"{cur:.3f}" if cur is not None else "n/a"
+        console.print(
+            f"      [{c}]{pnl:+.2f}[/{c}] [dim]({pct:+.0f}%)  {slug[:44]}  "
+            f"entry {entry:.3f} → {cur_s}[/dim]"
+        )
     return unrealized
 
 
