@@ -119,6 +119,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 console.print(f"  [green]✓ Settled {settled} resolved position(s)[/green]")
         except Exception as e:
             logger.debug("Settlement sweep failed (non-blocking): %s", e)
+        # Reconcile MANUAL closes: if you sold a position yourself on Polymarket,
+        # it's gone from the live account but still PENDING in our DB — detect
+        # that and settle it so the bot learns from the outcome.
+        try:
+            reconciled = await _reconcile_exchange_positions()
+            if reconciled:
+                console.print(f"  [yellow]↔ Reconciled {reconciled} manually-closed position(s) for learning[/yellow]")
+        except Exception as e:
+            logger.debug("Reconciliation failed (non-blocking): %s", e)
         try:
             exited = await _manage_open_positions(dry_run=dry_run)
             if exited:
@@ -423,6 +432,51 @@ async def _report_unrealized_pnl() -> float:
             f"entry {entry:.3f} → {cur_s}[/dim]"
         )
     return unrealized
+
+
+async def _reconcile_exchange_positions() -> int:
+    """
+    Detect positions you CLOSED yourself on Polymarket (present in our DB as
+    PENDING but absent from your live account) and settle them, so the bot
+    learns from the outcome instead of tracking a position you no longer hold.
+
+    SAFETY: only runs when the exchange returns a NON-EMPTY position set — if the
+    positions endpoint can't be read (empty), we cannot tell "you sold it" from
+    "couldn't read it," so we skip rather than wrongly close everything.
+    """
+    exchange = settings.live_exchange.lower()
+    if exchange not in ("polymarket_us", "polymarketus", "pmus"):
+        return 0
+    from integrations.polymarket_us import get_open_positions, get_current_price
+    from core.database import SessionLocal, TradeRow, update_trade_outcome
+    from core.models import TradeOutcome
+
+    held = await get_open_positions()
+    if not held:
+        return 0  # can't safely distinguish a manual close from an unreadable API
+
+    with SessionLocal() as s:
+        pending = [
+            (r.id, r.market_id, r.side, r.shares, r.bet_usdc, r.entry_price)
+            for r in s.query(TradeRow).filter(TradeRow.outcome == "PENDING").all()
+        ]
+
+    reconciled = 0
+    for tid, slug, side, shares, bet, entry in pending:
+        if slug in held:
+            continue  # still open on the exchange
+        # Gone from the live account → closed off-exchange. Estimate the outcome
+        # from the current market price (best proxy for the sale price).
+        cur = await get_current_price(slug, side)
+        if cur is None:
+            continue  # can't estimate → leave it pending for next time
+        pnl = shares * cur - (bet or 0.0)
+        outcome = TradeOutcome.WIN if pnl >= 0 else TradeOutcome.LOSS
+        update_trade_outcome(tid, outcome, pnl)
+        logger.info("Reconciled off-exchange close: trade %d (%s) → %s pnl=$%.2f",
+                    tid, slug, outcome.value, pnl)
+        reconciled += 1
+    return reconciled
 
 
 async def _settle_pending_trades() -> int:
