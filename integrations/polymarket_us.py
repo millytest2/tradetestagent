@@ -254,27 +254,57 @@ async def get_whale_signal(market, threshold_usd: float = 1500.0) -> float:
 
 
 async def get_current_price(slug: str, side: str):
-    """Current market price (0..1) for our side of a market, or None."""
-    import httpx, json as _json
+    """Current market price (0..1) for our side of a market, or None.
+
+    The single-market endpoint /v1/markets/<slug> returns 404 on this gateway;
+    the order BOOK endpoint works, so price off the best bid/ask midpoint.
+    """
+    import httpx
     if not slug:
         return None
+    book = None
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(f"https://gateway.polymarket.us/v1/markets/{slug}")
-            if r.status_code != 200:
-                return None
-            data = r.json()
-        m = data.get("market") if isinstance(data, dict) and "market" in data else data
-        prices = m.get("outcomePrices") if isinstance(m, dict) else None
-        if isinstance(prices, str):
-            prices = _json.loads(prices)
-        if not prices or len(prices) < 2:
-            return None
-        yes_p = float(prices[0])
-        return yes_p if side == "YES" else (1.0 - yes_p)
+            r = await client.get(f"https://gateway.polymarket.us/v1/markets/{slug}/book")
+            if r.status_code == 200:
+                book = r.json()
     except Exception as e:
-        logger.debug("PM-US price fetch failed for %s: %s", slug, e)
+        logger.debug("PM-US book fetch failed for %s: %s", slug, e)
         return None
+    if not isinstance(book, dict):
+        return None
+
+    bids = book.get("bids") or book.get("buys") or book.get("buy") or []
+    asks = book.get("asks") or book.get("sells") or book.get("sell") or []
+    if not bids and not asks and isinstance(book.get("orderbook"), dict):
+        ob = book["orderbook"]
+        bids, asks = ob.get("bids", []), ob.get("asks", [])
+
+    def _best(orders, highest: bool):
+        ps = []
+        for o in orders:
+            if isinstance(o, dict):
+                v = o.get("price")
+                try:
+                    ps.append(float(v))
+                except (TypeError, ValueError):
+                    pass
+        if not ps:
+            return None
+        return max(ps) if highest else min(ps)
+
+    best_bid = _best(bids, True)    # highest price someone will buy YES at
+    best_ask = _best(asks, False)   # lowest price someone will sell YES at
+    if best_bid is not None and best_ask is not None:
+        yes_p = (best_bid + best_ask) / 2.0
+    elif best_bid is not None:
+        yes_p = best_bid
+    elif best_ask is not None:
+        yes_p = best_ask
+    else:
+        return None
+    yes_p = max(0.0, min(1.0, yes_p))
+    return yes_p if side == "YES" else (1.0 - yes_p)
 
 
 async def close_position(slug: str, side: MarketSide, shares: float, price: float,
@@ -585,20 +615,27 @@ async def get_open_positions() -> set[str]:
     except Exception as e:
         logger.debug("SDK positions probe failed: %s", e)
 
-    # 2) REST fallback.
+    # 2) REST fallback. /v1/portfolio/positions is the one that responds 200 on
+    #    this gateway, so try it first.
     if raw is None:
         try:
             raw = await _rest_get_raw((
-                "/v1/account/positions", "/v1/positions",
-                "/v1/account/portfolio", "/v1/portfolio/positions",
+                "/v1/portfolio/positions", "/v1/account/positions",
+                "/v1/positions", "/v1/account/portfolio",
             ))
         except Exception as e:
             logger.debug("REST positions probe failed: %s", e)
 
+    # Surface the real shape once so parsing can be verified from the logs.
+    if raw is not None:
+        try:
+            logger.info("Raw positions payload: %s", str(raw)[:500])
+        except Exception:
+            pass
+
     slugs = _extract_position_slugs(raw)
-    if slugs:
-        logger.info("Exchange reports %d open position(s): %s",
-                    len(slugs), sorted(slugs)[:10])
+    logger.info("Exchange reports %d open position(s): %s",
+                len(slugs), sorted(slugs)[:10])
     return slugs
 
 

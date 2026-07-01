@@ -201,11 +201,14 @@ def _check_risk(
     if sizing.bet_usdc > bankroll * 0.50:
         return False, "Single trade would exceed 50% of bankroll — hard cap"
 
-    # 7. Win rate sanity check (don't trade if recent history is very bad)
+    # 7. Win rate sanity check (don't trade if recent history is very bad).
+    #    Gate on SETTLED trades (wins+losses), NOT total — otherwise a pile of
+    #    still-pending trades reads as "0% win rate" and wrongly halts trading.
     stats = get_trade_stats()
-    if stats["total"] >= 10 and stats["win_rate"] < 0.30:
+    settled = stats["wins"] + stats["losses"]
+    if settled >= 10 and stats["win_rate"] < 0.30:
         return False, (
-            f"Recent win rate {stats['win_rate']:.1%} is very low — "
+            f"Recent win rate {stats['win_rate']:.1%} over {settled} settled — "
             "circuit breaker triggered"
         )
 
