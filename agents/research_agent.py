@@ -225,4 +225,7 @@ async def research_markets_parallel(
 
     tasks = [asyncio.create_task(_bounded(fm)) for fm in flagged_markets]
     results = await asyncio.gather(*tasks)
-    return [r for r in results if r is not None]
+    # Return aligned 1:1 with flagged_markets (None where research failed). The
+    # caller zips this against the markets, so we must NOT drop Nones here —
+    # dropping them would shift every later report onto the wrong market.
+    return list(results)

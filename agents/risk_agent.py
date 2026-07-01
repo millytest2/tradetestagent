@@ -371,6 +371,17 @@ async def evaluate_and_trade(
             )
             logger.info("Drawdown governor: ×%.2f → bet=$%.2f", governor, sizing.bet_usdc)
 
+    # Re-validate the dust floor AFTER the variant/governor resize — those run
+    # past _check_risk and could have shrunk an approved bet below $1.
+    if sizing.bet_usdc < 1.0:
+        logger.warning("Post-sizing bet ${:.2f} fell below $1 — skipping".format(sizing.bet_usdc))
+        return TradeDecision(
+            approved=False,
+            rejection_reason=f"Final bet ${sizing.bet_usdc:.2f} below $1 after sizing",
+            prediction=prediction,
+            sizing=sizing,
+        )
+
     # ── Execute trade ─────────────────────────────────────────────────────────
     logger.info(
         "Trade APPROVED [Variant %s] — placing %s on '%s' for $%.2f at %.3f [dry_run=%s exchange=%s]",

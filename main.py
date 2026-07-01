@@ -270,6 +270,8 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     running_bankroll = live_bankroll
 
     for flagged_market, report in zip(top_flagged, reports):
+        if report is None:
+            continue   # research failed for this market — skip (kept aligned above)
         question = flagged_market.market.question
 
         # Skip any market we already hold a position in — on the exchange OR in

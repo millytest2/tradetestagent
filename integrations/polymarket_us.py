@@ -53,6 +53,18 @@ def _public_client():
     return PolymarketUS()
 
 
+def _first_num(*vals, default: float) -> float:
+    """First value that is not None, coerced to float; else `default`.
+    A real 0 is kept (not treated as missing)."""
+    for v in vals:
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return float(default)
+
+
 def _parse_us_market(raw: dict):
     """Parse a Polymarket US market dict into our Market model."""
     import json as _json
@@ -99,13 +111,17 @@ def _parse_us_market(raw: dict):
             question=question,
             description=raw.get("description", "")[:500],
             end_date_iso=end_date,
-            liquidity_usdc=float(raw.get("liquidity", 0) or 5000),  # US API may omit
-            volume_24h_usdc=float(raw.get("volume24hr", raw.get("volume", 0)) or 1000),
+            # Default ONLY when the field is truly absent (None) — a real 0 must
+            # stay 0 so the liquidity/volume quality filters can reject it.
+            liquidity_usdc=(float(raw["liquidity"]) if raw.get("liquidity") is not None else 5000.0),
+            volume_24h_usdc=_first_num(raw.get("volume24hr"), raw.get("volume"), default=1000.0),
             yes_price=max(0.01, min(0.99, yes_price)),
             no_price=max(0.01, min(0.99, no_price)),
             spread=abs(no_price - (1.0 - yes_price)),
             price_change_24h=0.0,
-            time_to_resolution_days=max(0.0, days_left),
+            # Keep negative days for already-expired markets so the scan's
+            # "never trade expired" guard (time_to_resolution_days < 0) can fire.
+            time_to_resolution_days=days_left,
             tags=[raw.get("category", "polymarket_us")],
             yes_token_id="",
             no_token_id="",
@@ -323,14 +339,17 @@ async def close_position(slug: str, side: MarketSide, shares: float, price: floa
         try:
             client.orders.close_position({"marketSlug": slug})
         except Exception:
-            # Fallback: explicit sell limit order
+            # Fallback: a MARKETABLE sell (priced a few cents through the quote so
+            # it fills immediately) — a resting limit at mid can sit unfilled while
+            # the caller wrongly books the position as closed.
+            sell_price = max(0.01, min(0.99, price - 0.03))
             client.orders.create({
                 "marketSlug": slug,
                 "intent": intent,
                 "type": "ORDER_TYPE_LIMIT",
-                "price": {"value": f"{max(0.01, min(0.99, price)):.2f}", "currency": "USD"},
+                "price": {"value": f"{sell_price:.2f}", "currency": "USD"},
                 "quantity": int(shares),
-                "tif": "TIME_IN_FORCE_GOOD_TILL_CANCEL",
+                "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
             })
         client.close()
         logger.info("Closed position %s %s (%.0f shares)", side.value, slug, shares)

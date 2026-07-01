@@ -213,8 +213,11 @@ async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
         us_markets = await pmus_get(limit=limit)
         flagged = _flag_and_score(us_markets, source="polymarket_us")
         flagged.sort(key=lambda x: x.priority_score, reverse=True)
-        flagged = _diversify(flagged)          # spread across categories, not 25 MLB clones
-        flagged = _spread_by_resolution(flagged)  # spread across resolution dates too
+        # Spread by resolution FIRST, then diversify by event LAST — otherwise the
+        # resolution re-sort pulls one event's many same-day sub-markets (e.g. 10
+        # MLB-draft legs) back to the top and floods the research batch.
+        flagged = _spread_by_resolution(flagged)
+        flagged = _diversify(flagged)          # event/category cap is the final word
         cats = {(_fm.market.tags[0] if _fm.market.tags else "other") for _fm in flagged[:25]}
         logger.info(
             "Scan complete — %d US markets queued across %d categories (%d fetched)",
