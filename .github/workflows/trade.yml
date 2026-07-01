@@ -45,7 +45,7 @@ jobs:
           NOTIFY_FROM_EMAIL: ${{ secrets.NOTIFY_FROM_EMAIL }}
           NOTIFY_SMTP_PASSWORD: ${{ secrets.NOTIFY_SMTP_PASSWORD }}
           LIVE_EXCHANGE: polymarket_us
-          BANKROLL_USDC: "20.0"          # TEST MODE: small sizing so 5 trades risk only a few $
+          BANKROLL_USDC: "98.0"          # real wallet balance — sizing scales off this
           AB_TESTING_ENABLED: "true"
           MIN_CONFIDENCE: "0.40"         # TEST: lowered so it actually trades
           MIN_EDGE: "0.0"                # TEST: trade on any edge (AI agrees w/ market otherwise)
