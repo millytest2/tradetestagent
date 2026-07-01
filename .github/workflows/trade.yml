@@ -5,6 +5,15 @@ on:
     - cron: '*/20 * * * *'   # every 20 minutes, 24/7
   workflow_dispatch:           # manual trigger from GitHub UI
 
+# Only ever run ONE trading cycle at a time. If a manual run and a scheduled
+# run (or two scheduled runs) overlap, the second waits instead of executing
+# concurrently — this prevents two cycles racing on the shared trade DB cache,
+# double-trading, or overcommitting the wallet. We never cancel a run mid-cycle
+# (cancel-in-progress: false) so an in-flight trade/settlement always finishes.
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
 jobs:
   trade:
     runs-on: ubuntu-latest
