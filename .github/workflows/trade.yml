@@ -2,7 +2,7 @@ name: Trading Bot
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # every 30 minutes, 24/7
+    - cron: '*/20 * * * *'   # every 20 minutes, 24/7
   workflow_dispatch:           # manual trigger from GitHub UI
 
 jobs:
