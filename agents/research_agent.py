@@ -124,9 +124,9 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
     logger.info("Research agents starting for: %s", question[:80])
 
     # Fire all scrapers + signals concurrently
-    twitter_task = asyncio.create_task(search_twitter(question, max_results=25))
-    reddit_task  = asyncio.create_task(search_reddit(question, max_posts=20))
-    rss_task     = asyncio.create_task(search_rss(question, max_per_feed=8))
+    twitter_task = asyncio.create_task(search_twitter(question, max_results=30))
+    reddit_task  = asyncio.create_task(search_reddit(question, max_posts=25))
+    rss_task     = asyncio.create_task(search_rss(question, max_per_feed=10))
     trends_task  = asyncio.create_task(get_trend_score(question))
     # Whale signal: use the Polymarket US order book when trading there,
     # otherwise the international CLOB book.

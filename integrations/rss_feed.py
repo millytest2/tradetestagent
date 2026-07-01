@@ -15,17 +15,33 @@ from core.models import SocialPost
 
 logger = logging.getLogger(__name__)
 
-# High-signal news feeds for prediction markets
-# Politico (403) and old MarketWatch (301) replaced with AP News + Guardian
+# High-signal news feeds for prediction markets, spanning many domains so a
+# market on any topic (politics, markets, sports, tech, science, world) has
+# relevant coverage. Feeds that 404/403 are skipped silently at fetch time, so
+# a broad list costs nothing when some are unavailable.
 DEFAULT_FEEDS = [
+    # General / world
     "https://feeds.reuters.com/reuters/topNews",
     "https://feeds.bbci.co.uk/news/rss.xml",
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
     "https://feeds.apnews.com/rss/apf-topnews",
     "https://www.theguardian.com/world/rss",
     "https://feeds.feedburner.com/TheAtlanticWire",
-    "https://www.espn.com/espn/rss/news",
+    "https://feeds.npr.org/1001/rss.xml",
+    # Politics
+    "https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml",
+    "https://feeds.washingtonpost.com/rss/politics",
+    # Markets / economics
     "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+    # Sports
+    "https://www.espn.com/espn/rss/news",
+    "https://www.espn.com/espn/rss/soccer/news",
+    # Tech / science
+    "https://feeds.arstechnica.com/arstechnica/index",
+    "https://www.sciencedaily.com/rss/top/science.xml",
 ]
 
 # In-memory cache: url -> (fetched_at_epoch, entries)
@@ -99,37 +115,53 @@ def _extract_query_terms(question: str, max_terms: int = 6) -> str:
 async def _fetch_google_news(question: str, client: httpx.AsyncClient,
                              max_items: int = 10) -> list[SocialPost]:
     """
-    Query-targeted news search via Google News RSS. Unlike homepage feeds this
-    returns articles specific to THIS market's keywords, and (being a Google
-    endpoint) it isn't IP-blocked on data-center runners the way Reddit is.
+    Query-targeted news search via Google News RSS. Runs several query angles
+    per market (focused multi-term + a broadened few-term query) and merges the
+    results, so coverage is wider than a single keyword string. Google endpoints
+    aren't IP-blocked on data-center runners the way Reddit is.
     """
-    terms = _extract_query_terms(question)
-    if not terms:
-        return []
     from urllib.parse import quote_plus
-    url = (f"https://news.google.com/rss/search?q={quote_plus(terms)}"
-           f"&hl=en-US&gl=US&ceid=US:en")
+
+    focused = _extract_query_terms(question, max_terms=6)
+    broad = _extract_query_terms(question, max_terms=3)
+    queries = [q for q in dict.fromkeys([focused, broad]) if q]   # dedupe, keep order
+    if not queries:
+        return []
+
     posts: list[SocialPost] = []
+    seen_urls: set[str] = set()
     try:
         import feedparser
-        resp = await client.get(url, follow_redirects=True)
-        resp.raise_for_status()
-        feed = feedparser.parse(resp.text)
-        for entry in feed.entries[:max_items]:
-            title = entry.get("title", "")
-            summary = (entry.get("summary", "") or "")[:500]
-            text = f"{title}. {summary}".strip(". ")
-            posts.append(SocialPost(
-                source="rss",
-                author=entry.get("source", {}).get("title", "news.google.com")
-                    if isinstance(entry.get("source"), dict) else "news.google.com",
-                text=text,
-                url=entry.get("link", ""),
-                published_at=_parse_rss_date(entry.get("published")),
-            ))
-        logger.info("Google News: %d articles for '%s'", len(posts), terms)
-    except Exception as e:
-        logger.debug("Google News search failed: %s", e)
+        for terms in queries:
+            url = (f"https://news.google.com/rss/search?q={quote_plus(terms)}"
+                   f"&hl=en-US&gl=US&ceid=US:en")
+            try:
+                resp = await client.get(url, follow_redirects=True)
+                resp.raise_for_status()
+                feed = feedparser.parse(resp.text)
+            except Exception as e:
+                logger.debug("Google News query '%s' failed: %s", terms, e)
+                continue
+            for entry in feed.entries[:max_items]:
+                link = entry.get("link", "")
+                if link and link in seen_urls:
+                    continue
+                seen_urls.add(link)
+                title = entry.get("title", "")
+                summary = (entry.get("summary", "") or "")[:500]
+                text = f"{title}. {summary}".strip(". ")
+                posts.append(SocialPost(
+                    source="rss",
+                    author=entry.get("source", {}).get("title", "news.google.com")
+                        if isinstance(entry.get("source"), dict) else "news.google.com",
+                    text=text,
+                    url=link,
+                    published_at=_parse_rss_date(entry.get("published")),
+                ))
+        logger.info("Google News: %d articles across %d queries for '%s'",
+                    len(posts), len(queries), focused)
+    except ImportError:
+        logger.debug("feedparser not installed — skipping Google News")
     return posts
 
 

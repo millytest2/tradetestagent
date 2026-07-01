@@ -397,6 +397,27 @@ async def predict_market(
             )
             return None
 
+    # ── High-conviction consensus ("spot the obvious wins") ────────────────────
+    # A genuinely strong setup is one where INDEPENDENT signals converge on the
+    # same side — not merely a high market price. When the LLM explicitly backs
+    # this side (not PASS) and/or whale order-flow agrees, nudge confidence up so
+    # the conviction-scaled Kelly in the risk agent sizes the bet larger. This is
+    # how the bot presses its best, best-confirmed opportunities without blindly
+    # chasing favorites.
+    consensus: list[str] = []
+    if rec == side.value:                      # LLM explicitly recommended this side
+        confidence = min(1.0, confidence + 0.10)
+        consensus.append("LLM")
+    whale = features.whale_bid_imbalance
+    if (side == MarketSide.YES and whale > 0.20) or (side == MarketSide.NO and whale < -0.20):
+        confidence = min(1.0, confidence + 0.05)
+        consensus.append("whale")
+    if consensus:
+        logger.info(
+            "Consensus backing %s (%s) — confidence → %.2f for '%s'",
+            side.value, "+".join(consensus), confidence, market.question[:60],
+        )
+
     prediction = Prediction(
         market_id=market.condition_id,
         question=market.question,

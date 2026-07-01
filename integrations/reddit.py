@@ -104,7 +104,7 @@ async def search_reddit(
     if not search_query:
         return []
 
-    target_subs = subreddits or RELEVANT_SUBREDDITS[:5]
+    target_subs = subreddits or RELEVANT_SUBREDDITS[:10]
     subreddit_str = "+".join(target_subs)
 
     params = {
