@@ -9,6 +9,7 @@ or wide spreads for deeper research.
 from __future__ import annotations
 
 import logging
+import random
 from typing import Optional
 
 from config import settings
@@ -113,6 +114,14 @@ def _priority_score(market: Market, flag_reason: str) -> float:
         score += 0.75
     if p >= 0.96 or p <= 0.04:
         score -= 1.5
+
+    # Trending: strongly reward markets actively trading TODAY (24h volume) so
+    # the bot focuses on what's actually moving, not the same static slice.
+    score += min(market.volume_24h_usdc / 4_000.0, 3.0)   # up to +3 for hot markets
+
+    # Exploration: a small random jitter so successive runs sample DIFFERENT
+    # markets from the pool instead of re-researching the identical top-25.
+    score += random.uniform(0.0, 2.0)
 
     return score
 
