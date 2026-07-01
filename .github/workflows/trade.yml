@@ -59,9 +59,9 @@ jobs:
           LIVE_EXCHANGE: polymarket_us
           BANKROLL_USDC: "98.0"          # fallback only — real wallet balance is fetched live each cycle
           AB_TESTING_ENABLED: "true"
-          MIN_CONFIDENCE: "0.40"         # TEST: lowered so it actually trades
-          MIN_EDGE: "0.0"                # TEST: trade on any edge (AI agrees w/ market otherwise)
-          FEE_BUFFER: "0.0"              # TEST: fees ignored per request
+          MIN_CONFIDENCE: "0.50"         # QUALITY: require real conviction
+          MIN_EDGE: "0.04"               # QUALITY: require a genuine 4-pt edge
+          FEE_BUFFER: "0.02"             # QUALITY: don't trade edges eaten by fees
           KELLY_FRACTION: "0.35"         # slightly bumped conviction sizing
           MAX_BET_FRACTION: "0.15"       # per-bet cap (15% of available)
           MAX_OPEN_POSITIONS: "8"        # SAFETY STOP across cycles

@@ -41,14 +41,14 @@ class Settings(BaseSettings):
     # ── Trading Parameters ────────────────────────────────────────────────────
     bankroll_usdc: float = Field(default=1000.0, ge=1.0)
     kelly_fraction: float = Field(default=0.35, ge=0.01, le=1.0)   # bumped 0.25→0.35 for slightly more conviction
-    min_edge: float = Field(default=0.0, ge=0.0, le=1.0)     # TEST: trade on any edge (was 0.05)
+    min_edge: float = Field(default=0.04, ge=0.0, le=1.0)    # QUALITY: require a genuine edge
     max_open_positions: int = Field(default=8, ge=1, le=100) # SAFETY STOP: cap total open positions across cycles
-    fee_buffer: float = Field(default=0.0, ge=0.0, le=0.5)   # TEST: fees ignored (was 0.03)
+    fee_buffer: float = Field(default=0.02, ge=0.0, le=0.5)  # QUALITY: cushion for exchange fees
 
     # ── Position management (SELL / exit rules on open positions) ──────────────
     stop_loss_pct: float = Field(default=0.40, ge=0.0, le=1.0)    # exit if position value falls 40% from entry
     take_profit_pct: float = Field(default=0.60, ge=0.0, le=5.0)  # lock in if position value rises 60% from entry
-    min_confidence: float = Field(default=0.40, ge=0.30, le=1.0)  # TEST profile
+    min_confidence: float = Field(default=0.50, ge=0.30, le=1.0)  # QUALITY: require real conviction
     max_bet_fraction: float = Field(default=0.15, ge=0.001, le=0.5)   # bumped 0.10→0.15 cap per bet
     min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)
     min_volume_usdc: float = Field(default=500.0, ge=0.0)

@@ -476,14 +476,13 @@ async def get_balance() -> float:
     return settings.bankroll_usdc
 
 
-async def _rest_balances_raw():
-    """Best-effort authenticated GET returning the raw balances payload."""
+async def _rest_get_raw(endpoints: tuple[str, ...]):
+    """Best-effort authenticated GET returning the first non-null JSON payload
+    from the given endpoints, using the SDK's own signed HTTP session."""
     client = _client()
     session = (getattr(client, "session", None)
                or getattr(client, "_session", None)
                or getattr(client, "http", None))
-    endpoints = ("/v1/account/balances", "/v1/account/balance", "/v1/balances",
-                 "/v1/balance", "/v1/portfolio", "/v1/account")
     try:
         for ep in endpoints:
             for caller in ("get", "request"):
@@ -503,6 +502,104 @@ async def _rest_balances_raw():
         except Exception:
             pass
     return None
+
+
+async def _rest_balances_raw():
+    """Best-effort authenticated GET returning the raw balances payload."""
+    return await _rest_get_raw((
+        "/v1/account/balances", "/v1/account/balance", "/v1/balances",
+        "/v1/balance", "/v1/portfolio", "/v1/account",
+    ))
+
+
+def _extract_position_slugs(raw) -> set[str]:
+    """Pull the set of market slugs/ids we currently hold from a positions
+    payload of any shape. Only counts entries with a non-zero size."""
+    out: set[str] = set()
+    if raw is None:
+        return out
+
+    items = raw
+    if isinstance(raw, dict):
+        for k in ("positions", "data", "result", "items", "holdings"):
+            if isinstance(raw.get(k), list):
+                items = raw[k]
+                break
+        else:
+            items = [raw]
+    if not isinstance(items, (list, tuple)):
+        return out
+
+    for it in items:
+        if isinstance(it, dict):
+            d = {str(k).lower(): v for k, v in it.items()}
+        else:
+            d = {str(k).lower(): getattr(it, k)
+                 for k in dir(it) if not k.startswith("_")}
+        # Require a non-zero size/quantity to count as an open holding.
+        size = None
+        for sk in ("size", "quantity", "shares", "netquantity", "net_quantity",
+                   "position", "amount", "balance"):
+            if sk in d and _num(d[sk]) is not None:
+                size = _num(d[sk])
+                break
+        if size is not None and abs(size) < 1e-9:
+            continue
+        for k in ("marketslug", "market_slug", "slug", "market", "market_id",
+                  "marketid", "conditionid", "condition_id", "ticker", "symbol"):
+            if d.get(k):
+                out.add(str(d[k]))
+                break
+    return out
+
+
+async def get_open_positions() -> set[str]:
+    """Return the set of market slugs/ids we currently hold on Polymarket US.
+
+    This is the SOURCE OF TRUTH for dedup — it reflects the real account, so it
+    prevents re-buying a market we already hold even if the local trade DB (the
+    GitHub cache) was lost or a prior cycle didn't persist.
+    """
+    raw = None
+    # 1) SDK probe.
+    try:
+        client = _client()
+        for holder_name in ("positions", "account", "portfolio"):
+            holder = getattr(client, holder_name, None)
+            if holder is None:
+                continue
+            for getter in ("positions", "list", "get_positions", "open_positions", "get"):
+                fn = getattr(holder, getter, None)
+                if callable(fn):
+                    try:
+                        raw = fn()
+                        break
+                    except Exception:
+                        continue
+            if raw is not None:
+                break
+        try:
+            client.close()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug("SDK positions probe failed: %s", e)
+
+    # 2) REST fallback.
+    if raw is None:
+        try:
+            raw = await _rest_get_raw((
+                "/v1/account/positions", "/v1/positions",
+                "/v1/account/portfolio", "/v1/portfolio/positions",
+            ))
+        except Exception as e:
+            logger.debug("REST positions probe failed: %s", e)
+
+    slugs = _extract_position_slugs(raw)
+    if slugs:
+        logger.info("Exchange reports %d open position(s): %s",
+                    len(slugs), sorted(slugs)[:10])
+    return slugs
 
 
 async def place_trade(

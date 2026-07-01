@@ -244,12 +244,30 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         except Exception as e:
             logger.debug("Balance fetch failed, using configured bankroll: %s", e)
 
+    # Source-of-truth dedup: fetch the markets we ACTUALLY hold on the exchange
+    # so we never re-buy one, even if the local trade DB (GitHub cache) was lost
+    # or a prior cycle didn't persist.
+    held_slugs: set = set()
+    if not use_mock and settings.live_exchange.lower() in ("polymarket_us", "polymarketus", "pmus"):
+        try:
+            from integrations.polymarket_us import get_open_positions
+            held_slugs = await get_open_positions()
+        except Exception as e:
+            logger.debug("Exchange position fetch failed (non-blocking): %s", e)
+
     # Running available balance — decremented as trades are placed so a single
     # cycle can't commit more than the wallet holds.
     running_bankroll = live_bankroll
 
     for flagged_market, report in zip(top_flagged, reports):
         question = flagged_market.market.question
+
+        # Skip any market we already hold a position in — on the exchange OR in
+        # the local DB. Prevents duplicate/repeat trades on the same market.
+        mkt = flagged_market.market
+        if held_slugs and (mkt.slug in held_slugs or mkt.condition_id in held_slugs):
+            console.print(f"  → [dim]{question[:60]} — already held, skipping[/dim]")
+            continue
 
         # Stop opening positions once this cycle has spent down the wallet.
         if running_bankroll is not None and running_bankroll < RESERVE_FLOOR:
