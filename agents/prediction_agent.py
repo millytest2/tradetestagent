@@ -368,12 +368,23 @@ async def predict_market(
     # The side we'd buy must be priced at/above the entry floor. This is what
     # produces a ~70% win rate — we only back likely outcomes — at the cost of
     # small per-win payouts. Off (0.0) by default; set MIN_ENTRY_PRICE to enable.
+    # EXCEPTION: a genuinely well-researched, high-conviction bet with a real
+    # edge may still take a "more risky" (below-floor) position — the backed bet.
     if market_price < settings.min_entry_price:
-        logger.info(
-            "Favorites mode: %s at %.3f below entry floor %.2f — skipping '%s'",
-            side.value, market_price, settings.min_entry_price, market.question[:60],
+        research_backed = (
+            confidence >= 0.70 and edge >= 0.08 and rec == side.value
         )
-        return None
+        if not research_backed:
+            logger.info(
+                "Favorites mode: %s at %.3f below entry floor %.2f — skipping '%s'",
+                side.value, market_price, settings.min_entry_price, market.question[:60],
+            )
+            return None
+        logger.info(
+            "Below entry floor but RESEARCH-BACKED (conf=%.2f, edge=%.3f, LLM=%s) "
+            "— allowing riskier bet on '%s'",
+            confidence, edge, rec, market.question[:60],
+        )
 
     # ── Direction check: don't trade against an explicit LLM call ──────────────
     # If the model explicitly recommended one side and our edge points the other
