@@ -342,14 +342,16 @@ async def evaluate_and_trade(
         variant = get_variant_for_trade()
         ab_variant = variant.name
         use_governor = getattr(variant, "use_drawdown_governor", True)
-        # Apply variant-specific parameters
+        # Apply variant sizing as a SCALE on the configured kelly_fraction, so
+        # the KELLY_FRACTION env knob stays meaningful (a fixed per-variant
+        # kelly used to silently override it).
         if sizing.bet_usdc > 0:
             from utils.kelly import compute_bet_sizing as _cbs
             variant_sizing = _cbs(
                 win_prob=win_prob,
                 market_price=market_price,
                 bankroll_usdc=bankroll,
-                kelly_override=variant.kelly_fraction,
+                kelly_override=settings.kelly_fraction * variant.kelly_scale,
             )
             # Preserve the streak + conviction multipliers through the variant
             # recompute — otherwise A/B sizing would silently discard them.
@@ -494,73 +496,6 @@ async def evaluate_and_trade(
             sizing=sizing,
         )
 
-
-# ── Settlement monitor ────────────────────────────────────────────────────────
-
-async def monitor_and_settle(
-    trade: Trade,
-    poll_interval_seconds: int = 3600,
-    max_polls: int = 720,   # ~30 days at 1h intervals
-) -> Optional[Trade]:
-    """
-    Poll until the market resolves and record the final outcome.
-
-    Returns the updated Trade with outcome set, or None if monitoring
-    was abandoned (e.g. max polls reached).
-    """
-    if trade.id is None:
-        logger.warning("Cannot monitor trade without a DB id")
-        return None
-
-    logger.info(
-        "Monitoring trade %d ('%s') — polling every %ds",
-        trade.id, trade.question[:60], poll_interval_seconds,
-    )
-
-    for poll in range(max_polls):
-        await asyncio.sleep(poll_interval_seconds)
-
-        try:
-            result = await check_settlement(trade)
-            if not result or not result.get("resolved"):
-                continue
-
-            market = result.get("market")
-            if not market:
-                continue
-
-            # Determine outcome from final market price
-            if trade.side == MarketSide.YES:
-                won = market.yes_price >= 0.95   # effectively resolved YES
-            else:
-                won = market.no_price >= 0.95    # effectively resolved NO
-
-            if won:
-                outcome = TradeOutcome.WIN
-                # Return = shares * $1 (binary market pays $1 per winning share)
-                pnl = trade.shares - trade.bet_usdc
-            else:
-                outcome = TradeOutcome.LOSS
-                pnl = -trade.bet_usdc
-
-            update_trade_outcome(
-                trade_id=trade.id,
-                outcome=outcome,
-                pnl_usdc=pnl,
-            )
-            trade.outcome = outcome
-            trade.pnl_usdc = pnl
-            trade.settled_at = datetime.utcnow()
-            trade.status = TradeStatus.SETTLED
-
-            logger.info(
-                "Trade %d settled — outcome=%s, pnl=$%.2f",
-                trade.id, outcome.value, pnl,
-            )
-            return trade
-
-        except Exception as e:
-            logger.error("Settlement poll %d failed for trade %d: %s", poll, trade.id, e)
-
-    logger.warning("Trade %d monitoring abandoned after %d polls", trade.id, max_polls)
-    return None
+# (monitor_and_settle removed: dead code — it referenced an unimported
+#  check_settlement and a dict return shape no exchange module provides.
+#  Settlement runs through main._settle_pending_trades each cycle instead.)

@@ -33,13 +33,14 @@ class Settings(BaseSettings):
     twitter_bearer_token: str = ""
 
     # ── Exchange routing ──────────────────────────────────────────────────────
-    # "polymarket" = use Polymarket CLOB for live trades (requires non-US IP)
-    # "kalshi"     = use Kalshi for live trades (US-legal, recommended for US users)
-    # "both"       = scan Polymarket + Kalshi, route trades to best available
+    # "polymarket_us" = Polymarket US (CFTC-regulated, US-legal) — PRODUCTION
+    # "polymarket"    = international Polymarket CLOB (requires non-US IP)
+    # "kalshi"        = Kalshi (US-legal)
+    # "both"          = scan Polymarket + Kalshi, route to best available
     live_exchange: str = "kalshi"
 
     # ── Trading Parameters ────────────────────────────────────────────────────
-    bankroll_usdc: float = Field(default=1000.0, ge=1.0)
+    bankroll_usdc: float = Field(default=100.0, ge=1.0)  # conservative fallback — live cash is fetched each cycle; this only applies if that fails
     kelly_fraction: float = Field(default=0.45, ge=0.01, le=1.0)   # bigger bets that scale with edge/bankroll
     min_edge: float = Field(default=0.02, ge=0.0, le=1.0)    # LEARNING BOOTSTRAP: looser so fast-settling trades place
     max_open_positions: int = Field(default=12, ge=1, le=100) # headroom for ~4 more near-term positions

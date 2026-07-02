@@ -339,6 +339,12 @@ async def close_position(slug: str, side: MarketSide, shares: float, price: floa
     if dry_run:
         logger.info("[DRY RUN] Close %s %s (%.0f shares @ %.2f)", side.value, slug, shares, price)
         return True
+    # SELL_SHORT semantics are as unverified as BUY_SHORT (the bug class that
+    # filled positions on the wrong side). Don't auto-exit NO positions until
+    # short intents are proven — leave them to settle naturally.
+    if side == MarketSide.NO and not settings.allow_short_side:
+        logger.warning("Skipping auto-close of NO position %s — SHORT intents unverified", slug)
+        return False
     try:
         client = _client()
         # Sell the side we hold: opposite intent of the buy
@@ -359,6 +365,16 @@ async def close_position(slug: str, side: MarketSide, shares: float, price: floa
                 "tif": "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL",
             })
         client.close()
+        # Verify the fill against the account before claiming success — an
+        # unfilled IOC would otherwise get booked as a realized exit while the
+        # position is still live on the exchange.
+        try:
+            still_held = await get_open_positions()
+            if slug in still_held:
+                logger.warning("Close order for %s sent but position still held — NOT booking exit", slug)
+                return False
+        except Exception:
+            pass  # verification unavailable → trust the order call
         logger.info("Closed position %s %s (%.0f shares)", side.value, slug, shares)
         return True
     except Exception as e:
@@ -442,7 +458,13 @@ async def check_settlement(slug: str):
             elif rz is not None:
                 realized = _num(rz)
             if realized is not None:
-                return "won" if realized > 0 else "lost"
+                if realized > 0:
+                    return "won"
+                if realized < 0:
+                    return "lost"
+                # realized == 0 is ambiguous (could be an unsettled credit) —
+                # leave unresolved; the book/list paths will decide next cycle.
+                return None
     except Exception as e:
         logger.debug("PM-US settlement positions check failed for %s: %s", slug, e)
     return None

@@ -26,42 +26,27 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class StrategyVariant:
-    name: str             # "A" or "B"
-    label: str            # human readable
-    min_edge: float       # minimum edge to trade
-    min_confidence: float
-    kelly_fraction: float
-    sentiment_weight: float   # 0-1 weight on sentiment vs technical
-    whale_weight: float       # 0-1 weight on whale signal
-    llm_weight: float         # LLM weight in ensemble (1 - this = XGBoost weight)
-    contra_indicator: bool    # fade extreme sentiment against market price
-    use_drawdown_governor: bool = True   # A/B-tested: shrink bets while in drawdown
+    """Only fields the trading path actually APPLIES live here. (An earlier
+    version carried min_edge/min_confidence/sentiment weights that nothing
+    read — misleading dead config, removed.)"""
+    name: str                  # "A" or "B"
+    label: str                 # human readable
+    kelly_scale: float         # multiplier on settings.kelly_fraction
+    use_drawdown_governor: bool  # shrink bets while in realized drawdown
 
 
 VARIANT_A = StrategyVariant(
     name="A",
     label="Governed (drawdown-protected)",
-    min_edge=0.06,
-    min_confidence=0.62,
-    kelly_fraction=0.35,          # sizeable, but capital-protected
-    sentiment_weight=0.50,
-    whale_weight=0.30,
-    llm_weight=0.60,
-    contra_indicator=True,
-    use_drawdown_governor=True,   # applies the drawdown governor
+    kelly_scale=0.80,             # more conservative sizing, capital-protected
+    use_drawdown_governor=True,
 )
 
 VARIANT_B = StrategyVariant(
     name="B",
     label="Aggressive (ungoverned)",
-    min_edge=0.04,
-    min_confidence=0.58,
-    kelly_fraction=0.50,          # bigger bets, no drawdown throttle
-    sentiment_weight=0.40,
-    whale_weight=0.50,
-    llm_weight=0.70,
-    contra_indicator=False,
-    use_drawdown_governor=False,  # stays aggressive through drawdowns
+    kelly_scale=1.15,             # bigger bets, no drawdown throttle
+    use_drawdown_governor=False,
 )
 
 VARIANTS = {"A": VARIANT_A, "B": VARIANT_B}

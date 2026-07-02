@@ -50,7 +50,7 @@ from core.database import (
 from agents.scan_agent import scan_markets
 from agents.research_agent import research_markets_parallel
 from agents.prediction_agent import predict_market
-from agents.risk_agent import evaluate_and_trade, monitor_and_settle
+from agents.risk_agent import evaluate_and_trade
 from agents.postmortem_agent import run_postmortem
 from ml.calibrator import calibrator
 
@@ -275,8 +275,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             logger.debug("Exchange position fetch failed (non-blocking): %s", e)
 
     def _event_key(slug: str) -> str:
-        """Group sub-markets of one event: strip the trailing candidate/threshold
-        segment (tec-atp-wimb-2026-07-12-w-jansin → tec-atp-wimb-2026-07-12-w)."""
+        """Group sub-markets of one event. PM-US slugs embed the event date
+        (tec-atp-wimb-2026-07-12-w-jansin, nfpc-uschange-gte-june-2026-07-02-atl150k),
+        so everything up to and including the date identifies the event —
+        robust even when the candidate part is multi-segment. Falls back to
+        stripping one trailing segment when no date is present."""
+        import re
+        m = re.match(r"^(.*?\d{4}-\d{2}-\d{2})", slug)
+        if m:
+            return m.group(1)
         return slug.rsplit("-", 1)[0] if "-" in slug else slug
 
     # Count positions per EVENT (exchange + local DB) so we never stack multiple
@@ -613,7 +620,14 @@ async def _run_pending_postmortems() -> None:
 
     try:
         with SessionLocal() as session:
-            analyzed_ids = session.query(PostmortemRow.trade_id).distinct()
+            # A MidFlightReview (early look at a still-open loser) must NOT
+            # count as "analyzed" — otherwise the deep losers we most want to
+            # study never get their settlement postmortem.
+            analyzed_ids = (
+                session.query(PostmortemRow.trade_id)
+                .filter(PostmortemRow.agent_name != "MidFlightReview")
+                .distinct()
+            )
             unanalyzed = (
                 session.query(TradeRow)
                 .filter(
@@ -636,30 +650,45 @@ async def _run_pending_postmortems() -> None:
 
         from core.models import Trade, MarketSide, TradeStatus, TradeOutcome
         for row in unanalyzed:
-            trade = Trade(
-                id=row.id,
-                market_id=row.market_id,
-                question=row.question or "",
-                side=MarketSide(row.side),
-                entry_price=row.entry_price,
-                bet_usdc=row.bet_usdc,
-                shares=row.shares,
-                status=TradeStatus(row.status),
-                outcome=TradeOutcome(row.outcome),
-                pnl_usdc=row.pnl_usdc,
-                tx_hash=row.tx_hash or "",
-                placed_at=row.placed_at,
-                settled_at=row.settled_at,
-                notes=row.notes or "{}",
-            )
-            if trade.outcome == TradeOutcome.WIN:
-                report = await run_winmortem(trade)
-                tag = "[green]✓ Win analyzed[/green]"
-            else:
-                report = await run_postmortem(trade)
-                tag = "[red]✓ Loss analyzed[/red]"
-            if report:
-                console.print(f"  {tag} — {len(report.findings)} findings")
+            # Per-trade isolation: one malformed row must not wedge the whole
+            # sweep (it would stay in the first batch and block forever).
+            try:
+                trade = Trade(
+                    id=row.id,
+                    market_id=row.market_id,
+                    question=row.question or "",
+                    side=MarketSide(row.side),
+                    entry_price=row.entry_price or 0.0,
+                    bet_usdc=row.bet_usdc or 0.0,
+                    shares=row.shares or 0.0,
+                    status=TradeStatus(row.status),
+                    outcome=TradeOutcome(row.outcome),
+                    pnl_usdc=row.pnl_usdc or 0.0,
+                    tx_hash=row.tx_hash or "",
+                    placed_at=row.placed_at,
+                    settled_at=row.settled_at,
+                    notes=row.notes or "{}",
+                )
+                if trade.outcome == TradeOutcome.WIN:
+                    report = await run_winmortem(trade)
+                    tag = "[green]✓ Win analyzed[/green]"
+                else:
+                    report = await run_postmortem(trade)
+                    tag = "[red]✓ Loss analyzed[/red]"
+                if report:
+                    console.print(f"  {tag} — {len(report.findings)} findings")
+            except Exception as e:
+                logger.error("Postmortem failed for trade %s: %s", row.id, e)
+
+        # A/B promotion analysis — DB-only, no LLM. Without this call the
+        # "auto-promote the winning variant" logic never ran unattended.
+        try:
+            from core.ab_testing import analyze_variants
+            ab = analyze_variants()
+            if ab.get("winner"):
+                console.print(f"  [cyan]A/B winner promoted: Variant {ab['winner']}[/cyan]")
+        except Exception as e:
+            logger.debug("A/B analysis failed (non-blocking): %s", e)
 
     except Exception as e:
         logger.error("Learning sweep failed: %s", e)

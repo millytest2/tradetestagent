@@ -478,9 +478,8 @@ try:
             st.metric("Win Rate", f"{wr:.1%}", f"{n} trades")
             st.metric("PnL", f"${pnl:+.2f}")
             st.caption(
-                f"Edge≥{variant_def.min_edge:.0%} | "
-                f"Kelly {variant_def.kelly_fraction:.0%} | "
-                f"Conf≥{variant_def.min_confidence:.0%}"
+                f"Kelly ×{variant_def.kelly_scale:.2f} | "
+                f"Drawdown governor: {'on' if variant_def.use_drawdown_governor else 'off'}"
             )
 
     with col_ab_summary:

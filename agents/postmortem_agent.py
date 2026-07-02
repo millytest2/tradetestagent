@@ -251,6 +251,12 @@ async def run_postmortem(trade: Trade) -> Optional[PostmortemReport]:
     findings: list[PostmortemFinding] = []
     for result in results:
         if isinstance(result, PostmortemFinding):
+            # Don't persist error-findings: a saved PostmortemRow marks the
+            # trade "analyzed" forever, so a transient LLM outage would burn
+            # its one learning slot. Skip → the sweep retries next cycle.
+            if result.root_cause == "Agent error":
+                logger.warning("[%s] errored — will retry next cycle", result.agent_name)
+                continue
             findings.append(result)
             save_postmortem_finding(result)
         elif isinstance(result, Exception):
@@ -370,6 +376,9 @@ async def run_midflight_review(
         f"Past lessons:\n{lessons_block}\n\n{ctx}",
         _t,
     )
+    if finding.root_cause == "Agent error":
+        logger.warning("MidFlightReview errored for trade %d — will retry", trade_id)
+        return None
     save_postmortem_finding(finding)   # also serves as the run-once marker
     save_lesson(
         category="midflight_review",
@@ -445,6 +454,9 @@ async def run_winmortem(trade: Trade) -> Optional[PostmortemReport]:
     findings: list[PostmortemFinding] = []
     for result in results:
         if isinstance(result, PostmortemFinding):
+            if result.root_cause == "Agent error":
+                logger.warning("[%s] errored — will retry next cycle", result.agent_name)
+                continue
             findings.append(result)
             save_postmortem_finding(result)
             # Persist as a positive lesson the prediction agent will read
