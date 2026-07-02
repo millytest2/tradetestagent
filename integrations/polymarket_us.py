@@ -29,8 +29,6 @@ from core.models import MarketSide, Trade, TradeStatus
 
 logger = logging.getLogger(__name__)
 
-_BOOK_SHAPE_LOGGED = False   # one-time diagnostic flag for the order-book shape
-
 
 def _client():
     """Build an authenticated Polymarket US SDK client."""
@@ -213,43 +211,26 @@ async def get_whale_signal(market, threshold_usd: float = 1500.0) -> float:
     read. Best-effort: tries the gateway order-book endpoints and degrades
     gracefully (same 0.0 the bot used before) if the shape differs.
     """
-    import httpx
-
     slug = getattr(market, "slug", "") or getattr(market, "condition_id", "")
     if not slug:
         return 0.0
 
-    book = None
-    for path in (f"/v1/markets/{slug}/book",
-                 f"/v1/markets/{slug}/orderbook",
-                 f"/v1/markets/{slug}/bbo"):
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                r = await client.get("https://gateway.polymarket.us" + path)
-                if r.status_code == 200:
-                    book = r.json()
-                    break
-        except Exception:
-            continue
-    if not isinstance(book, dict):
+    md = await _fetch_book(slug)
+    if md is None:
         return 0.0
 
     try:
-        # Order-book responses vary; accept the common key names
-        bids = book.get("bids") or book.get("buys") or book.get("buy") or []
-        asks = book.get("asks") or book.get("sells") or book.get("sell") or []
-        # Some APIs nest under "orderbook"
-        if not bids and not asks and isinstance(book.get("orderbook"), dict):
-            ob = book["orderbook"]
-            bids = ob.get("bids", []); asks = ob.get("asks", [])
+        bids = md.get("bids") or []
+        asks = md.get("offers") or md.get("asks") or []
 
         def _whale_notional(orders) -> float:
             total = 0.0
             for o in orders:
                 if not isinstance(o, dict):
                     continue
-                price = float(o.get("price", 0) or 0)
-                size = float(o.get("size", o.get("quantity", 0)) or 0)
+                price = _px(o.get("px") if o.get("px") is not None else o.get("price")) or 0.0
+                size = _num(o.get("qty") if o.get("qty") is not None
+                            else o.get("size", o.get("quantity"))) or 0.0
                 notional = price * size
                 if notional >= threshold_usd:
                     total += notional
@@ -271,66 +252,79 @@ async def get_whale_signal(market, threshold_usd: float = 1500.0) -> float:
         return 0.0
 
 
-async def get_current_price(slug: str, side: str):
-    """Current market price (0..1) for our side of a market, or None.
+def _px(v) -> float | None:
+    """Coerce a gateway price — either a bare number or {'value': '0.78',
+    'currency': 'USD'} — to a float. None if absent/unparseable."""
+    if isinstance(v, dict):
+        v = v.get("value")
+    return _num(v)
 
-    The single-market endpoint /v1/markets/<slug> returns 404 on this gateway;
-    the order BOOK endpoint works, so price off the best bid/ask midpoint.
-    """
+
+async def _fetch_book(slug: str) -> dict | None:
+    """Fetch and unwrap the order book for a market. The gateway nests
+    everything under 'marketData': {marketSlug, bids, offers, state, stats}."""
     import httpx
     if not slug:
         return None
-    book = None
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(f"https://gateway.polymarket.us/v1/markets/{slug}/book")
-            if r.status_code == 200:
-                book = r.json()
+            if r.status_code != 200:
+                return None
+            book = r.json()
     except Exception as e:
         logger.debug("PM-US book fetch failed for %s: %s", slug, e)
         return None
     if not isinstance(book, dict):
         return None
+    md = book.get("marketData")
+    return md if isinstance(md, dict) else book
 
-    # One-time diagnostic: surface the real book shape so the price extraction
-    # below can be matched to it (prices were coming back n/a).
-    global _BOOK_SHAPE_LOGGED
-    if not _BOOK_SHAPE_LOGGED:
-        _BOOK_SHAPE_LOGGED = True
-        try:
-            logger.info("Raw book payload sample (%s): %s", slug,
-                        str(book).replace("\n", " ")[:800])
-        except Exception:
-            pass
 
-    bids = book.get("bids") or book.get("buys") or book.get("buy") or []
-    asks = book.get("asks") or book.get("sells") or book.get("sell") or []
-    if not bids and not asks and isinstance(book.get("orderbook"), dict):
-        ob = book["orderbook"]
-        bids, asks = ob.get("bids", []), ob.get("asks", [])
+def _book_best(orders, highest: bool) -> float | None:
+    ps = []
+    for o in orders or []:
+        if isinstance(o, dict):
+            p = _px(o.get("px") if o.get("px") is not None else o.get("price"))
+            if p is not None:
+                ps.append(p)
+    if not ps:
+        return None
+    return max(ps) if highest else min(ps)
 
-    def _best(orders, highest: bool):
-        ps = []
-        for o in orders:
-            if isinstance(o, dict):
-                v = o.get("price")
-                try:
-                    ps.append(float(v))
-                except (TypeError, ValueError):
-                    pass
-        if not ps:
-            return None
-        return max(ps) if highest else min(ps)
 
-    best_bid = _best(bids, True)    # highest price someone will buy YES at
-    best_ask = _best(asks, False)   # lowest price someone will sell YES at
-    if best_bid is not None and best_ask is not None:
-        yes_p = (best_bid + best_ask) / 2.0
-    elif best_bid is not None:
-        yes_p = best_bid
-    elif best_ask is not None:
-        yes_p = best_ask
-    else:
+async def get_current_price(slug: str, side: str):
+    """Current market price (0..1) for our side of a market, or None.
+
+    Reads the gateway book: marketData.bids/offers (prices are {'value': str}
+    objects), falling back to stats.lastTradePx/closePx, and — for an EXPIRED
+    market — the settlementPx (1.0 or 0.0), so resolved positions mark to their
+    true final value.
+    """
+    md = await _fetch_book(slug)
+    if md is None:
+        return None
+
+    stats = md.get("stats") if isinstance(md.get("stats"), dict) else {}
+    state = str(md.get("state") or "")
+
+    yes_p = None
+    if "EXPIRED" in state:
+        yes_p = _px(stats.get("settlementPx"))   # authoritative final value
+    if yes_p is None:
+        best_bid = _book_best(md.get("bids"), True)
+        best_ask = _book_best(md.get("offers") or md.get("asks"), False)
+        if best_bid is not None and best_ask is not None:
+            yes_p = (best_bid + best_ask) / 2.0
+        elif best_bid is not None:
+            yes_p = best_bid
+        elif best_ask is not None:
+            yes_p = best_ask
+    if yes_p is None:
+        yes_p = _px(stats.get("lastTradePx"))
+    if yes_p is None:
+        yes_p = _px(stats.get("closePx"))
+    if yes_p is None:
         return None
     yes_p = max(0.0, min(1.0, yes_p))
     return yes_p if side == "YES" else (1.0 - yes_p)
@@ -382,6 +376,23 @@ async def check_settlement(slug: str):
     import httpx, json as _json
     if not slug:
         return None
+
+    # 0) BOOK (authoritative): an EXPIRED market carries its settlementPx —
+    #    1.0 means outcome[0] (YES side) won, 0.0 means it lost.
+    try:
+        md = await _fetch_book(slug)
+        if md is not None and "EXPIRED" in str(md.get("state") or ""):
+            stats = md.get("stats") if isinstance(md.get("stats"), dict) else {}
+            sp = _px(stats.get("settlementPx"))
+            if sp is not None:
+                logger.info("Settlement via book for %s: settlementPx=%.4f", slug, sp)
+                if sp >= 0.99:
+                    return "yes"
+                if sp <= 0.01:
+                    return "no"
+    except Exception as e:
+        logger.debug("PM-US settlement book check failed for %s: %s", slug, e)
+
     # 1) Market lookup via the LIST endpoint (the single-market GET
     #    /v1/markets/<slug> returns 404 on this gateway, so query instead).
     try:
