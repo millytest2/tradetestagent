@@ -375,37 +375,66 @@ async def close_position(slug: str, side: MarketSide, shares: float, price: floa
 async def check_settlement(slug: str):
     """
     Check if a Polymarket US market has resolved.
-    Returns 'yes' if outcome[0] (our YES) won, 'no' if outcome[1] (NO) won,
-    or None if still open / unknown. Resolved markets report outcomePrices
-    like ["1","0"] (YES won) or ["0","1"] (NO won).
+    Returns 'yes'/'no' for which OUTCOME won (market-data path), 'won'/'lost'
+    for OUR position's result (authenticated positions path), or None if still
+    open / unknown.
     """
     import httpx, json as _json
     if not slug:
         return None
+    # 1) Market lookup via the LIST endpoint (the single-market GET
+    #    /v1/markets/<slug> returns 404 on this gateway, so query instead).
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(f"https://gateway.polymarket.us/v1/markets/{slug}")
-            if r.status_code != 200:
-                return None
-            data = r.json()
-        m = data.get("market") if isinstance(data, dict) and "market" in data else data
-        if not isinstance(m, dict):
-            return None
-        if not (m.get("closed") or m.get("archived")):
-            return None
-        prices = m.get("outcomePrices")
-        if isinstance(prices, str):
-            prices = _json.loads(prices)
-        if not prices or len(prices) < 2:
-            return None
-        if float(prices[0]) >= 0.99:
-            return "yes"
-        if float(prices[1]) >= 0.99:
-            return "no"
-        return None
+            for params in ({"slug": slug}, {"slugs": slug}, {"search": slug}):
+                try:
+                    r = await client.get(PMUS_GATEWAY, params=params)
+                    if r.status_code != 200:
+                        continue
+                    body = r.json()
+                    mkts = body.get("markets", []) if isinstance(body, dict) else []
+                    m = next((x for x in mkts if isinstance(x, dict)
+                              and x.get("slug") == slug), None)
+                    if m is None:
+                        continue
+                    if not (m.get("closed") or m.get("archived")):
+                        return None   # found and still open → not resolved
+                    prices = m.get("outcomePrices")
+                    if isinstance(prices, str):
+                        prices = _json.loads(prices)
+                    if prices and len(prices) >= 2:
+                        if float(prices[0]) >= 0.99:
+                            return "yes"
+                        if float(prices[1]) >= 0.99:
+                            return "no"
+                    return None
+                except Exception:
+                    continue
     except Exception as e:
-        logger.debug("PM-US settlement check failed for %s: %s", slug, e)
-        return None
+        logger.debug("PM-US settlement market lookup failed for %s: %s", slug, e)
+
+    # 2) Authenticated positions payload: an 'expired' position has resolved.
+    #    'realized' > 0 means the payout was credited → our side WON.
+    try:
+        raw = await _rest_get_raw((
+            "/v1/portfolio/positions", "/v1/account/positions", "/v1/positions",
+        ))
+        container = raw.get("positions") if isinstance(raw, dict) else None
+        entry = container.get(slug) if isinstance(container, dict) else None
+        if isinstance(entry, dict) and entry.get("expired"):
+            logger.info("Settlement via positions payload for %s: %s",
+                        slug, str(entry).replace("\n", " ")[:300])
+            realized = None
+            rz = entry.get("realized")
+            if isinstance(rz, dict):
+                realized = _num(rz.get("value"))
+            elif rz is not None:
+                realized = _num(rz)
+            if realized is not None:
+                return "won" if realized > 0 else "lost"
+    except Exception as e:
+        logger.debug("PM-US settlement positions check failed for %s: %s", slug, e)
+    return None
 
 
 # Keys that mean "spendable cash" vs "total account equity (incl. open

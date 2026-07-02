@@ -507,7 +507,12 @@ async def _settle_pending_trades() -> int:
             result = None
         if not result:
             continue
-        won = (result == "yes" and side == "YES") or (result == "no" and side == "NO")
+        # "yes"/"no" = which OUTCOME resolved; "won"/"lost" = OUR position's
+        # result reported directly by the exchange's positions payload.
+        if result in ("won", "lost"):
+            won = result == "won"
+        else:
+            won = (result == "yes" and side == "YES") or (result == "no" and side == "NO")
         outcome = TradeOutcome.WIN if won else TradeOutcome.LOSS
         pnl = (shares - bet) if won else -bet
         update_trade_outcome(tid, outcome, pnl)
