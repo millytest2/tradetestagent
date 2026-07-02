@@ -29,6 +29,8 @@ from core.models import MarketSide, Trade, TradeStatus
 
 logger = logging.getLogger(__name__)
 
+_BOOK_SHAPE_LOGGED = False   # one-time diagnostic flag for the order-book shape
+
 
 def _client():
     """Build an authenticated Polymarket US SDK client."""
@@ -289,6 +291,17 @@ async def get_current_price(slug: str, side: str):
         return None
     if not isinstance(book, dict):
         return None
+
+    # One-time diagnostic: surface the real book shape so the price extraction
+    # below can be matched to it (prices were coming back n/a).
+    global _BOOK_SHAPE_LOGGED
+    if not _BOOK_SHAPE_LOGGED:
+        _BOOK_SHAPE_LOGGED = True
+        try:
+            logger.info("Raw book payload sample (%s): %s", slug,
+                        str(book).replace("\n", " ")[:800])
+        except Exception:
+            pass
 
     bids = book.get("bids") or book.get("buys") or book.get("buy") or []
     asks = book.get("asks") or book.get("sells") or book.get("sell") or []
@@ -563,42 +576,65 @@ async def _rest_balances_raw():
 
 def _extract_position_slugs(raw) -> set[str]:
     """Pull the set of market slugs/ids we currently hold from a positions
-    payload of any shape. Only counts entries with a non-zero size."""
+    payload. Handles the Polymarket US shape {'positions': {<slug>: {...}}} —
+    a DICT keyed by slug — as well as a plain list of position objects. Only
+    counts entries with a non-zero net position."""
     out: set[str] = set()
     if raw is None:
         return out
 
-    items = raw
+    # Unwrap the container.
+    container = raw
     if isinstance(raw, dict):
         for k in ("positions", "data", "result", "items", "holdings"):
-            if isinstance(raw.get(k), list):
-                items = raw[k]
+            if k in raw and isinstance(raw[k], (list, dict)):
+                container = raw[k]
                 break
-        else:
-            items = [raw]
-    if not isinstance(items, (list, tuple)):
+
+    # Normalise to a list of (key_slug, entry) pairs.
+    pairs = []
+    if isinstance(container, dict):
+        # Keyed by slug (the KEY is the market slug).
+        pairs = [(str(k), v) for k, v in container.items()]
+    elif isinstance(container, (list, tuple)):
+        pairs = [(None, v) for v in container]
+    else:
         return out
 
-    for it in items:
-        if isinstance(it, dict):
-            d = {str(k).lower(): v for k, v in it.items()}
+    for key_slug, entry in pairs:
+        if isinstance(entry, dict):
+            d = {str(k).lower(): v for k, v in entry.items()}
+        elif key_slug is not None:
+            # value isn't a dict but the key is a slug — count it
+            out.add(key_slug)
+            continue
         else:
-            d = {str(k).lower(): getattr(it, k)
-                 for k in dir(it) if not k.startswith("_")}
-        # Require a non-zero size/quantity to count as an open holding.
+            continue
+
+        # Non-zero net position required.
         size = None
-        for sk in ("size", "quantity", "shares", "netquantity", "net_quantity",
-                   "position", "amount", "balance"):
+        for sk in ("netposition", "net_position", "size", "quantity", "shares",
+                   "netquantity", "net_quantity", "position", "qtybought", "amount"):
             if sk in d and _num(d[sk]) is not None:
                 size = _num(d[sk])
                 break
         if size is not None and abs(size) < 1e-9:
             continue
-        for k in ("marketslug", "market_slug", "slug", "market", "market_id",
-                  "marketid", "conditionid", "condition_id", "ticker", "symbol"):
-            if d.get(k):
-                out.add(str(d[k]))
-                break
+
+        # Slug: the dict key, else nested marketMetadata.slug, else common keys.
+        slug = key_slug
+        if not slug:
+            meta = d.get("marketmetadata") or {}
+            if isinstance(meta, dict):
+                slug = meta.get("slug") or meta.get("Slug")
+        if not slug:
+            for k in ("marketslug", "market_slug", "slug", "market", "market_id",
+                      "marketid", "conditionid", "condition_id", "ticker", "symbol"):
+                if d.get(k):
+                    slug = d[k]
+                    break
+        if slug:
+            out.add(str(slug))
     return out
 
 
@@ -645,10 +681,13 @@ async def get_open_positions() -> set[str]:
         except Exception as e:
             logger.debug("REST positions probe failed: %s", e)
 
-    # Surface the real shape once so parsing can be verified from the logs.
+    # Surface the real shape so parsing can be verified from the logs. Strip
+    # embedded newlines (the exchange's 'outcome' field contains one, which was
+    # truncating the logged line) and show more of the payload.
     if raw is not None:
         try:
-            logger.info("Raw positions payload: %s", str(raw)[:500])
+            flat = str(raw).replace("\n", " ").replace("\r", " ")
+            logger.info("Raw positions payload: %s", flat[:1500])
         except Exception:
             pass
 
