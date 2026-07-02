@@ -371,6 +371,20 @@ async def evaluate_and_trade(
             )
             logger.info("Drawdown governor: ×%.2f → bet=$%.2f", governor, sizing.bet_usdc)
 
+    # PM-US SHORT-side safety: BUY_SHORT execution semantics are unverified on
+    # the US API (evidence of positions filling on the wrong side at the
+    # complementary price). Until a live order is verified, block NO-side
+    # live trades rather than risk buying the opposite of what we sized.
+    if (prediction.side == MarketSide.NO and not dry_run
+            and not settings.allow_short_side
+            and settings.live_exchange.lower() in ("polymarket_us", "polymarketus", "pmus")):
+        return TradeDecision(
+            approved=False,
+            rejection_reason="NO-side (BUY_SHORT) execution unverified on PM-US — blocked",
+            prediction=prediction,
+            sizing=sizing,
+        )
+
     # Re-validate the dust floor AFTER the variant/governor resize — those run
     # past _check_risk and could have shrunk an approved bet below $1.
     if sizing.bet_usdc < 1.0:

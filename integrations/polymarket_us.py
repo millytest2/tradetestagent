@@ -805,6 +805,12 @@ async def place_trade(
             "Polymarket US order placed: %s %s %d @ $%s — id=%s",
             intent, slug, quantity, price_str, order_id,
         )
+        # Echo the exchange's own view of the order so fills can be verified
+        # against what we intended (side/price/quantity).
+        try:
+            logger.info("Order response echo: %s", str(order).replace("\n", " ")[:400])
+        except Exception:
+            pass
         return Trade(
             market_id=condition_id,
             question=slug,

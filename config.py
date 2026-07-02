@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     pause_new_trades: bool = Field(default=False)  # KILL SWITCH: hold all open positions, open nothing new
     favorite_price_floor: float = Field(default=0.70, ge=0.5, le=0.95)  # "obvious win" strong-favorite threshold
     min_entry_price: float = Field(default=0.0, ge=0.0, le=0.95)  # FAVORITES MODE: only bet a side priced >= this (targets high win rate)
+    max_positions_per_event: int = Field(default=1, ge=1, le=10)  # never stack bets on the same event (5 Wimbledon picks compete with each other)
+    allow_short_side: bool = Field(default=False)  # PM-US BUY_SHORT execution is unverified — block NO-side live orders until proven
 
     # ── Position management (SELL / exit rules on open positions) ──────────────
     stop_loss_pct: float = Field(default=0.40, ge=0.0, le=1.0)    # exit if position value falls 40% from entry

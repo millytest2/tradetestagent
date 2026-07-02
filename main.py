@@ -274,6 +274,26 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         except Exception as e:
             logger.debug("Exchange position fetch failed (non-blocking): %s", e)
 
+    def _event_key(slug: str) -> str:
+        """Group sub-markets of one event: strip the trailing candidate/threshold
+        segment (tec-atp-wimb-2026-07-12-w-jansin → tec-atp-wimb-2026-07-12-w)."""
+        return slug.rsplit("-", 1)[0] if "-" in slug else slug
+
+    # Count positions per EVENT (exchange + local DB) so we never stack multiple
+    # bets on the same event — e.g. 5 different Wimbledon-winner candidates
+    # compete with each other: at most one can win.
+    event_counts: dict[str, int] = {}
+    try:
+        from core.database import SessionLocal, TradeRow
+        with SessionLocal() as _s:
+            db_open = [r.market_id for r in _s.query(TradeRow)
+                       .filter(TradeRow.outcome == "PENDING").all()]
+        for s_ in set(db_open) | set(held_slugs):
+            k = _event_key(str(s_))
+            event_counts[k] = event_counts.get(k, 0) + 1
+    except Exception as e:
+        logger.debug("Event-count build failed (non-blocking): %s", e)
+
     # Running available balance — decremented as trades are placed so a single
     # cycle can't commit more than the wallet holds.
     running_bankroll = live_bankroll
@@ -288,6 +308,12 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         mkt = flagged_market.market
         if held_slugs and (mkt.slug in held_slugs or mkt.condition_id in held_slugs):
             console.print(f"  → [dim]{question[:60]} — already held, skipping[/dim]")
+            continue
+
+        # Event-level cap: don't stack bets on the same event's sub-markets.
+        ev = _event_key(mkt.slug or mkt.condition_id)
+        if event_counts.get(ev, 0) >= settings.max_positions_per_event:
+            console.print(f"  → [dim]{question[:60]} — event already covered, skipping[/dim]")
             continue
 
         # Stop opening positions once this cycle has spent down the wallet.
@@ -345,6 +371,7 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             # Deduct committed capital from the cycle's running balance.
             if running_bankroll is not None:
                 running_bankroll = max(0.0, running_bankroll - sz.bet_usdc)
+            event_counts[ev] = event_counts.get(ev, 0) + 1   # cap within-cycle too
             trades_placed += 1
             if max_trades and trades_placed >= max_trades:
                 console.print(
