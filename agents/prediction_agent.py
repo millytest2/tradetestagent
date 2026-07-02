@@ -274,17 +274,18 @@ async def predict_market(
 
         except Exception as e:
             logger.warning("LLM prediction failed: %s — falling back to rule-based", e)
-            # Fall back to rule-based prior (same as demo mode) rather than
-            # leaving confidence at 0.50 which would block all trades.
+            # Fall back to rule-based prior — but a no-LLM cycle must trade
+            # TIMIDLY. This fallback once reached conf 0.72 + rec=YES and let a
+            # sentiment-pumped prior take the "research-backed" longshot
+            # exception (bought a 4% Medvedev longshot with the API down).
+            # Cap confidence below every high-conviction gate and force PASS so
+            # the consensus/favorite boosts and risky-bet exception cannot fire
+            # without a real LLM opinion.
             from ml.calibrator import _rule_based_probability
             llm_prob = _rule_based_probability(features)
             s = report.sentiment
-            confidence = min(0.72, 0.52 + abs(s.compound) * 0.35)
-            recommendation = (
-                "YES" if llm_prob > market.yes_price + settings.min_edge
-                else "NO" if (1 - llm_prob) > market.no_price + settings.min_edge
-                else "PASS"
-            )
+            confidence = min(0.55, 0.45 + abs(s.compound) * 0.15)
+            recommendation = "PASS"
             reasoning = f"[API fallback] Rule-based prior: sentiment={s.compound:+.3f}, market={market.yes_price:.3f}."
             # Don't fire fallback trades on markets expiring very soon —
             # rule-based prior has no time-awareness and can misfire badly
