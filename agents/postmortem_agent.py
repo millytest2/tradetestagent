@@ -230,6 +230,11 @@ async def run_postmortem(trade: Trade) -> Optional[PostmortemReport]:
     if trade.outcome != TradeOutcome.LOSS:
         logger.debug("Skipping postmortem — trade %d is not a loss", trade.id or 0)
         return None
+    if not settings.anthropic_api_key or not settings.llm_enabled:
+        # FREE MODE: no API calls. Return without saving anything so the trade
+        # stays un-analyzed and gets its postmortem when the LLM is re-enabled.
+        logger.info("LLM disabled — postmortem for trade %d deferred", trade.id or 0)
+        return None
 
     logger.info(
         "Running 5-agent postmortem on trade %d: '%s'",
@@ -329,6 +334,8 @@ async def run_midflight_review(
     from core.database import midflight_reviewed, SessionLocal, TradeRow
     if trade_id is None or midflight_reviewed(trade_id):
         return None
+    if not settings.anthropic_api_key or not settings.llm_enabled:
+        return None   # FREE MODE: no API calls; review when re-enabled
 
     with SessionLocal() as s:
         r = s.query(TradeRow).filter(TradeRow.id == trade_id).first()
@@ -419,6 +426,9 @@ async def run_winmortem(trade: Trade) -> Optional[PostmortemReport]:
     losses) — together they let the agents learn from both outcomes.
     """
     if trade.outcome != TradeOutcome.WIN:
+        return None
+    if not settings.anthropic_api_key or not settings.llm_enabled:
+        logger.info("LLM disabled — win-analysis for trade %d deferred", trade.id or 0)
         return None
 
     logger.info(

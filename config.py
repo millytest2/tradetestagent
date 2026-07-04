@@ -67,6 +67,9 @@ class Settings(BaseSettings):
 
     # ── LLM Model ─────────────────────────────────────────────────────────────
     llm_model: str = "claude-sonnet-4-6"
+    llm_enabled: bool = True   # FREE MODE: false = zero Anthropic API calls; bot
+                               # trades timidly (favorites-only, capped confidence)
+                               # and defers postmortems until re-enabled
 
     # ── Polymarket endpoints ──────────────────────────────────────────────────
     gamma_api_url: str = "https://gamma-api.polymarket.com"

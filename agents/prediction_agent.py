@@ -220,24 +220,24 @@ async def predict_market(
     reasoning = ""
     recommendation = "PASS"
 
-    if not settings.anthropic_api_key:
-        # Demo mode — use rule-based prior with boosted confidence from sentiment
+    if not settings.anthropic_api_key or not settings.llm_enabled:
+        # FREE MODE / no key — rule-based prior only. Must trade TIMIDLY: the
+        # old version boosted confidence to 0.75 with a real YES/NO rec, which
+        # let sentiment-pumped priors through the high-conviction gates (same
+        # bug class that bought a 4% longshot when the API ran out of credits).
+        # Capped confidence + forced PASS → only plain favorites can trade.
         from ml.calibrator import _rule_based_probability
         llm_prob = _rule_based_probability(features)
         s = report.sentiment
-        confidence = min(0.75, 0.55 + abs(s.compound) * 0.4)
+        confidence = min(0.55, 0.45 + abs(s.compound) * 0.15)
         reasoning = (
-            f"[DEMO — no API key] Rule-based prior: sentiment={s.compound:+.3f}, "
-            f"market={market.yes_price:.3f}. Set ANTHROPIC_API_KEY for full LLM reasoning."
+            f"[FREE MODE — no LLM] Rule-based prior: sentiment={s.compound:+.3f}, "
+            f"market={market.yes_price:.3f}."
         )
-        recommendation = (
-            "YES" if llm_prob > market.yes_price + settings.min_edge
-            else "NO" if (1 - llm_prob) > market.no_price + settings.min_edge
-            else "PASS"
-        )
+        recommendation = "PASS"
         logger.info(
-            "[DEMO] LLM P(YES)=%.3f, conf=%.2f, rec=%s for '%s'",
-            llm_prob, confidence, recommendation, market.question[:60],
+            "[FREE MODE] P(YES)=%.3f, conf=%.2f (LLM disabled) for '%s'",
+            llm_prob, confidence, market.question[:60],
         )
     else:
         try:
