@@ -62,9 +62,11 @@ def compute_bet_sizing(
     raw_bet = max(0.0, kf_used * bankroll_usdc)
     bet_usdc = min(raw_bet, max_allowed)
 
-    # Minimum $1 bet (dust threshold). Anything smaller is meaningless — a $0.50
-    # bet does nothing — so zero it out rather than place a token position.
-    if bet_usdc < 1.0:
+    # Zero only TRUE dust here. The user-facing "$1 minimum / $2 meaningful
+    # floor" lives in the risk agent — if this function zeroes anything under
+    # $1, a small bankroll's $0.80 Kelly bets die before the floor can lift
+    # them to $2 and the bot places nothing.
+    if bet_usdc < 0.25:
         bet_usdc = 0.0
 
     return BetSizing(
