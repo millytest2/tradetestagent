@@ -221,6 +221,25 @@ async def scan_markets(limit: int = 300) -> list[FlaggedMarket]:
         from integrations.polymarket_us import get_active_markets as pmus_get
         us_markets = await pmus_get(limit=limit)
         flagged = _flag_and_score(us_markets, source="polymarket_us")
+        # Favorites pre-filter: when favorites mode is on, a market with no
+        # tradeable side at/above the entry floor can NEVER pass the prediction
+        # gate — researching it wastes the whole batch (a real run burned 16/25
+        # slots on 40-60c coin-flips). NO-side execution is disabled while
+        # SHORT intents are unverified, so only the YES price counts then.
+        if settings.min_entry_price >= 0.5:
+            floor = settings.min_entry_price
+            def _tradeable(fm):
+                m = fm.market
+                if settings.allow_short_side:
+                    return max(m.yes_price, m.no_price) >= floor
+                return m.yes_price >= floor
+            before = len(flagged)
+            flagged = [fm for fm in flagged if _tradeable(fm)]
+            logger.info(
+                "Favorites pre-filter: %d of %d queued markets have a tradeable "
+                "side ≥ %.2f", len(flagged), before, floor,
+            )
+
         flagged.sort(key=lambda x: x.priority_score, reverse=True)
         # Spread by resolution FIRST, then diversify by event LAST — otherwise the
         # resolution re-sort pulls one event's many same-day sub-markets (e.g. 10

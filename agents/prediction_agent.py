@@ -387,10 +387,15 @@ async def predict_market(
     # wrong can no longer carry a trade on its own. All three are P(YES).
     signal_prob = _signal_probability(features, market.yes_price)
     estimators = [xgb_prob, llm_prob, signal_prob]
+    # Small tolerance: an estimator sitting AT the market price is neutral, not
+    # a disagreement. Without it, a 72c favorite needed price-anchored
+    # estimators to sit strictly above 72% — an unfairly high bar that vetoed
+    # 7 of 25 markets in a real run.
+    VOTE_TOL = 0.03
     if side == MarketSide.YES:
-        agree = sum(1 for e in estimators if e >= market.yes_price)
+        agree = sum(1 for e in estimators if e >= market.yes_price - VOTE_TOL)
     else:
-        agree = sum(1 for e in estimators if e <= market.yes_price)
+        agree = sum(1 for e in estimators if e <= market.yes_price + VOTE_TOL)
     if agree < 2:
         logger.info(
             "2-of-3 vote failed (%d/3 agree on %s; xgb=%.2f llm=%.2f sig=%.2f vs %.2f) "
