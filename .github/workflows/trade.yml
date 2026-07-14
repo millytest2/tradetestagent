@@ -58,7 +58,7 @@ jobs:
           TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}
           LLM_ENABLED: "false"           # FREE MODE: zero Anthropic API calls (no credits needed). Flip to "true" after adding credits — postmortems catch up automatically.
           LIVE_EXCHANGE: polymarket_us
-          BANKROLL_USDC: "98.0"          # fallback only — real wallet balance is fetched live each cycle
+          BANKROLL_USDC: "35.0"          # fallback only — real wallet balance is fetched live each cycle (user withdrew $50; ~$37 remains)
           AB_TESTING_ENABLED: "true"
           MIN_CONFIDENCE: "0.30"         # FAVORITES MODE: loose (the favorite floor + 2-of-3 vote do the filtering)
           MIN_EDGE: "0.0"                # FAVORITES MODE: back favorites even near fair value (win-rate priority)
