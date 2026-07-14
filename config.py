@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     min_entry_price: float = Field(default=0.0, ge=0.0, le=0.95)  # FAVORITES MODE: only bet a side priced >= this (targets high win rate)
     max_positions_per_event: int = Field(default=1, ge=1, le=10)  # never stack bets on the same event (5 Wimbledon picks compete with each other)
     min_bet_usdc: float = Field(default=2.0, ge=1.0)  # meaningful minimum: a signal that passes every gate bets at least this (small bankrolls compute Kelly bets in cents)
+    strategy_epoch: str = "2026-07-03"  # circuit breaker judges only trades placed on/after this date — trades from before the big bug-fix wave (wrong-side fills, longshots, stacking) don't indict the current strategy
     allow_short_side: bool = Field(default=False)  # PM-US BUY_SHORT execution is unverified — block NO-side live orders until proven
 
     # ── Position management (SELL / exit rules on open positions) ──────────────

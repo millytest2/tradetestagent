@@ -204,16 +204,23 @@ def _check_risk(
     if sizing.bet_usdc > bankroll * 0.50:
         return False, "Single trade would exceed 50% of bankroll — hard cap"
 
-    # 7. Win rate sanity check over the RECENT window (last 10 settled).
-    #    All-time would forever punish the early buggy trades (wrong-side
-    #    fills, no-LLM longshots) even after those paths were fixed — judge
-    #    the strategy on what it's done lately, not its scar tissue.
+    # 7. Win rate sanity check — judged ONLY on trades placed under the
+    #    CURRENT ruleset (on/after strategy_epoch). The pre-fix trades
+    #    (wrong-side fills, no-LLM longshots, event stacking) settled last, so
+    #    even a recent-N window reads as their failures; those code paths are
+    #    structurally blocked and must not indict the fixed strategy. Until 10
+    #    new-regime trades have settled there's nothing to judge — trade on.
     try:
+        from datetime import datetime as _dt
         from core.database import SessionLocal, TradeRow
+        epoch = _dt.fromisoformat(settings.strategy_epoch)
         with SessionLocal() as _s:
             recent = (
                 _s.query(TradeRow)
-                .filter(TradeRow.outcome.in_(["WIN", "LOSS"]))
+                .filter(
+                    TradeRow.outcome.in_(["WIN", "LOSS"]),
+                    TradeRow.placed_at >= epoch,
+                )
                 .order_by(TradeRow.settled_at.desc())
                 .limit(10)
                 .all()
@@ -222,8 +229,8 @@ def _check_risk(
             recent_rate = sum(1 for t in recent if t.outcome == "WIN") / len(recent)
             if recent_rate < 0.30:
                 return False, (
-                    f"Recent win rate {recent_rate:.1%} over last {len(recent)} settled — "
-                    "circuit breaker triggered"
+                    f"Win rate {recent_rate:.1%} over last {len(recent)} settled "
+                    f"(placed since {settings.strategy_epoch}) — circuit breaker triggered"
                 )
     except Exception as e:
         logger.debug("Recent win-rate check failed (non-blocking): %s", e)

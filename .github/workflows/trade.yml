@@ -68,7 +68,7 @@ jobs:
           MAX_TIME_TO_RESOLUTION_DAYS: "30"   # widened from 4: a 4-day window left only 2 of 800 markets. 30d gives a real favorites pool (near-term ones still settle first)
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll
           MAX_BET_FRACTION: "0.25"       # per-bet cap raised to 25% (conviction scaling keeps weak bets small)
-          MAX_OPEN_POSITIONS: "14"       # headroom for ~5 more positions (9 open now)
+          MAX_OPEN_POSITIONS: "5"        # user: place ~5 trades for the day, hold until they settle, then reassess
           PAUSE_NEW_TRADES: "false"      # flip to "true" to hold positions and open nothing new
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
