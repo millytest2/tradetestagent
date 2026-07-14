@@ -69,7 +69,10 @@ def _signal_probability(features: PredictionFeatures, market_yes_price: float) -
     and the LLM (reasoning), it's a genuinely independent vote on P(YES).
     """
     p = market_yes_price
-    p += 0.10 * features.whale_bid_imbalance     # whales stacking YES → higher
+    # Whale kept mild (0.05): mega-liquid favorites carry huge market-maker ask
+    # walls that read as −1.0 "whale sell pressure" — at 0.10 that alone vetoed
+    # every favorite in the 2-of-3 vote.
+    p += 0.05 * features.whale_bid_imbalance     # whales stacking YES → higher
     p += 0.06 * features.compound_sentiment      # bullish narrative → higher
     p += 0.30 * features.price_change_24h        # upward momentum → higher
     return max(0.02, min(0.98, p))
@@ -297,10 +300,20 @@ async def predict_market(
                 return None
 
     # ── Ensemble (confidence-weighted) ────────────────────────────────────────
-    # Base split: trust XGBoost more once it has real training data. Then tilt
-    # toward the LLM when it's confident and back toward XGBoost when it's not,
-    # so a hesitant LLM can't drag the estimate around on its own.
-    base_xgb_weight = 0.60 if calibrator.is_trained else 0.40
+    # Base split: trust XGBoost in proportion to how much data it has actually
+    # trained on. A 19-sample model once said P=0.22 on an 82% favorite and, at
+    # 60% weight, vetoed every trade — full weight only from ~50 settled trades.
+    from core.database import get_trade_stats as _gts
+    try:
+        _n_settled = _gts()["wins"] + _gts()["losses"]
+    except Exception:
+        _n_settled = 0
+    if calibrator.is_trained and _n_settled >= 50:
+        base_xgb_weight = 0.60
+    elif calibrator.is_trained:
+        base_xgb_weight = 0.35   # trained but small-sample: minority voice
+    else:
+        base_xgb_weight = 0.40
     conf_tilt = (confidence - 0.5) * 0.30            # ±0.15 at confidence extremes
     llm_weight = min(0.85, max(0.15, (1.0 - base_xgb_weight) + conf_tilt))
     xgb_weight = 1.0 - llm_weight
@@ -365,21 +378,34 @@ async def predict_market(
     yes_edge = calibrated - market.yes_price
     no_edge = (1 - calibrated) - market.no_price
 
-    if yes_edge >= no_edge and yes_edge >= edge_floor:
-        side = MarketSide.YES
-        edge = yes_edge
-        market_price = market.yes_price
-    elif no_edge > yes_edge and no_edge >= edge_floor:
-        side = MarketSide.NO
-        edge = no_edge
-        market_price = market.no_price
-        calibrated = 1 - calibrated   # flip for NO side presentation
-    else:
+    # Pick the side to trade. In favorites mode the side priced at/above the
+    # entry floor is the only EXECUTABLE one — prefer it even when the other
+    # side shows nominally more edge (the old picker chose NO at 18c, which the
+    # entry floor then blocked, over the 82c favorite). And allow a favorite to
+    # be FAIRLY priced (small tolerance below the edge floor): backing an 82%
+    # favorite at fair value is the win-rate strategy; demanding positive model
+    # edge from small-sample models rejected everything.
+    fav_mode = settings.min_entry_price >= 0.5
+    FAIR_TOL = 0.02
+    candidates = []   # (is_favorite_side, edge, side, price)
+    for side_, edge_, px_ in (
+        (MarketSide.YES, yes_edge, market.yes_price),
+        (MarketSide.NO, no_edge, market.no_price),
+    ):
+        is_fav = 1 if (fav_mode and px_ >= settings.min_entry_price) else 0
+        floor_ = edge_floor - (FAIR_TOL if is_fav else 0.0)
+        if edge_ >= floor_:
+            candidates.append((is_fav, edge_, side_, px_))
+    if not candidates:
         logger.info(
             "Edge too small (YES=%.3f, NO=%.3f) — skipping '%s'",
             yes_edge, no_edge, market.question[:60],
         )
         return None
+    candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
+    _, edge, side, market_price = candidates[0]
+    if side == MarketSide.NO:
+        calibrated = 1 - calibrated   # flip for NO side presentation
 
     # ── Second lever: 2-of-3 independent vote ──────────────────────────────────
     # Require at least 2 of the 3 INDEPENDENT estimators (XGBoost, LLM, market-
@@ -391,7 +417,7 @@ async def predict_market(
     # a disagreement. Without it, a 72c favorite needed price-anchored
     # estimators to sit strictly above 72% — an unfairly high bar that vetoed
     # 7 of 25 markets in a real run.
-    VOTE_TOL = 0.03
+    VOTE_TOL = 0.05
     if side == MarketSide.YES:
         agree = sum(1 for e in estimators if e >= market.yes_price - VOTE_TOL)
     else:
