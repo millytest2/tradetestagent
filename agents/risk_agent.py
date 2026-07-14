@@ -150,7 +150,10 @@ def _drawdown_governor() -> float:
         realized = stats.get("total_pnl_usdc", 0.0)
         if realized >= 0:
             return 1.0
-        start = max(1.0, settings.bankroll_usdc)
+        # Drawdown measured against INITIAL capital (current bankroll + what
+        # was lost) — measuring against the current/fallback bankroll would
+        # over-punish after a withdrawal shrinks the configured number.
+        start = max(1.0, settings.bankroll_usdc + abs(realized))
         return max(0.4, min(1.0, 1.0 + realized / start))
     except Exception:
         return 1.0
@@ -322,6 +325,15 @@ async def evaluate_and_trade(
             bankroll * settings.max_bet_fraction,
         )
         sizing = sizing.model_copy(update={"bet_usdc": max(0.0, adjusted_bet)})
+    # Meaningful-minimum floor: on a small bankroll, thin-edge favorites compute
+    # Kelly bets in cents and the $1 dust rule would block everything. A signal
+    # that earned a positive Kelly bet places at least min_bet_usdc (still
+    # capped by max_bet_fraction).
+    if sizing.bet_usdc > 0:
+        floored = min(max(sizing.bet_usdc, settings.min_bet_usdc),
+                      bankroll * settings.max_bet_fraction)
+        sizing = sizing.model_copy(update={"bet_usdc": floored})
+    if conviction_mult != 1.0:
         logger.info(
             "Sizing: streak=%.2fx × conviction=%.2fx (conf=%.2f) = %.2fx → $%.2f",
             kelly_mult, conf_scale, prediction.confidence, conviction_mult,
@@ -385,6 +397,14 @@ async def evaluate_and_trade(
                 update={"bet_usdc": max(0.0, sizing.bet_usdc * governor)}
             )
             logger.info("Drawdown governor: ×%.2f → bet=$%.2f", governor, sizing.bet_usdc)
+
+    # Re-apply the meaningful-minimum floor after the variant/governor resizes so
+    # an approved signal doesn't get shrunk below the $1 dust re-check.
+    if sizing.bet_usdc > 0:
+        sizing = sizing.model_copy(update={"bet_usdc": min(
+            max(sizing.bet_usdc, settings.min_bet_usdc),
+            bankroll * settings.max_bet_fraction,
+        )})
 
     # PM-US SHORT-side safety: BUY_SHORT execution semantics are unverified on
     # the US API (evidence of positions filling on the wrong side at the

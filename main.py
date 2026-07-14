@@ -90,7 +90,25 @@ def _print_stats() -> None:
     table.add_row("Pending", str(stats["pending"]))
     win_rate = stats["win_rate"]
     color = "green" if win_rate >= 0.60 else "yellow" if win_rate >= 0.45 else "red"
-    table.add_row("Win rate", f"[{color}]{win_rate:.1%}[/{color}]")
+    table.add_row("Win rate (all-time)", f"[{color}]{win_rate:.1%}[/{color}]")
+    # Recent window — what the circuit breaker judges and the number that shows
+    # whether the FIXED strategy is tracking toward the 68% target.
+    try:
+        from core.database import SessionLocal, TradeRow
+        with SessionLocal() as _s:
+            recent = (
+                _s.query(TradeRow)
+                .filter(TradeRow.outcome.in_(["WIN", "LOSS"]))
+                .order_by(TradeRow.settled_at.desc())
+                .limit(10)
+                .all()
+            )
+        if recent:
+            rr = sum(1 for t in recent if t.outcome == "WIN") / len(recent)
+            rc = "green" if rr >= 0.60 else "yellow" if rr >= 0.45 else "red"
+            table.add_row(f"Win rate (last {len(recent)})", f"[{rc}]{rr:.1%}[/{rc}]")
+    except Exception:
+        pass
     pnl = stats["total_pnl_usdc"]
     pnl_color = "green" if pnl >= 0 else "red"
     table.add_row("Total PnL", f"[{pnl_color}]${pnl:+,.2f}[/{pnl_color}]")
