@@ -201,16 +201,29 @@ def _check_risk(
     if sizing.bet_usdc > bankroll * 0.50:
         return False, "Single trade would exceed 50% of bankroll — hard cap"
 
-    # 7. Win rate sanity check (don't trade if recent history is very bad).
-    #    Gate on SETTLED trades (wins+losses), NOT total — otherwise a pile of
-    #    still-pending trades reads as "0% win rate" and wrongly halts trading.
-    stats = get_trade_stats()
-    settled = stats["wins"] + stats["losses"]
-    if settled >= 10 and stats["win_rate"] < 0.30:
-        return False, (
-            f"Recent win rate {stats['win_rate']:.1%} over {settled} settled — "
-            "circuit breaker triggered"
-        )
+    # 7. Win rate sanity check over the RECENT window (last 10 settled).
+    #    All-time would forever punish the early buggy trades (wrong-side
+    #    fills, no-LLM longshots) even after those paths were fixed — judge
+    #    the strategy on what it's done lately, not its scar tissue.
+    try:
+        from core.database import SessionLocal, TradeRow
+        with SessionLocal() as _s:
+            recent = (
+                _s.query(TradeRow)
+                .filter(TradeRow.outcome.in_(["WIN", "LOSS"]))
+                .order_by(TradeRow.settled_at.desc())
+                .limit(10)
+                .all()
+            )
+        if len(recent) >= 10:
+            recent_rate = sum(1 for t in recent if t.outcome == "WIN") / len(recent)
+            if recent_rate < 0.30:
+                return False, (
+                    f"Recent win rate {recent_rate:.1%} over last {len(recent)} settled — "
+                    "circuit breaker triggered"
+                )
+    except Exception as e:
+        logger.debug("Recent win-rate check failed (non-blocking): %s", e)
 
     # 8. Rolling 30-trade circuit breaker — pause if strategy is breaking down
     _check_rolling_circuit_breaker()
