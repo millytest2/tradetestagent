@@ -65,7 +65,7 @@ jobs:
           FEE_BUFFER: "0.0"
           MIN_ENTRY_PRICE: "0.68"        # FAVORITES MODE: only bet sides priced >= 68% → targets ~70% win rate
           MIN_TIME_TO_RESOLUTION_DAYS: "0"    # allow soon-resolving markets
-          MAX_TIME_TO_RESOLUTION_DAYS: "10"   # fast-settling favorites only: every trade resolves within days → faster compounding AND faster learning (each settlement retrains the model + raises its vote)
+          MAX_TIME_TO_RESOLUTION_DAYS: "25"   # 10d starved the pool to 0 (too few sub-10d favorites exist right now); 25d restores a real pool while the resolution-spread still surfaces the soonest-settling ones first
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll
           MAX_BET_FRACTION: "0.25"       # per-bet cap raised to 25% (conviction scaling keeps weak bets small)
           MAX_OPEN_POSITIONS: "5"        # user: place ~5 trades for the day, hold until they settle, then reassess

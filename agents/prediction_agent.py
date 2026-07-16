@@ -391,7 +391,13 @@ async def predict_market(
     # favorite at fair value is the win-rate strategy; demanding positive model
     # edge from small-sample models rejected everything.
     fav_mode = settings.min_entry_price >= 0.5
-    FAIR_TOL = 0.02
+    # Favorite fair-price tolerance scales with model maturity. A small-sample
+    # XGBoost is systematically pessimistic (trained mostly on losses → it says
+    # P=0.22 on 82% favorites), dragging the blend ~10pts below price even at
+    # low weight. Until the model earns trust, back the favorite unless the
+    # blend STRONGLY disagrees (>0.15 below price); tighten to 0.03 by 50 trades
+    # so a matured model's edge check regains teeth.
+    FAIR_TOL = 0.15 if _n_settled < 50 else 0.03
     candidates = []   # (is_favorite_side, edge, side, price)
     for side_, edge_, px_ in (
         (MarketSide.YES, yes_edge, market.yes_price),
