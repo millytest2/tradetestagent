@@ -311,7 +311,10 @@ async def predict_market(
     if calibrator.is_trained and _n_settled >= 50:
         base_xgb_weight = 0.60
     elif calibrator.is_trained:
-        base_xgb_weight = 0.35   # trained but small-sample: minority voice
+        # Small-sample model: it says P=0.22 on 87% favorites. Even at 0.35
+        # weight it dragged every favorite's estimate ~15 points below price
+        # and blocked all trading. Keep it nearly advisory until it has data.
+        base_xgb_weight = 0.15
     else:
         base_xgb_weight = 0.40
     conf_tilt = (confidence - 0.5) * 0.30            # ±0.15 at confidence extremes
@@ -324,7 +327,10 @@ async def predict_market(
     # trustworthy — cut confidence so contested signals size down (via the
     # conviction-scaled Kelly in the risk agent) or fail the confidence gate.
     disagreement = abs(xgb_prob - llm_prob)
-    if disagreement > 0.20:
+    # Disagreement from a <50-sample XGBoost isn't information — its wild
+    # outputs (P=0.22 on 87% favorites) were sinking confidence below the gate
+    # on every market. Only count disagreement once the model has real data.
+    if disagreement > 0.20 and _n_settled >= 50:
         penalty = min(0.20, (disagreement - 0.20) * 0.5)
         confidence = max(0.0, confidence - penalty)
         logger.info(
