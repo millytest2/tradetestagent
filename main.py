@@ -68,12 +68,20 @@ console = Console()
 # ── Pretty output helpers ─────────────────────────────────────────────────────
 
 def _print_banner() -> None:
+    # Echo the EFFECTIVE config every run — several past incidents traced to
+    # env/config values silently differing from what we believed was running.
+    llm_on = bool(settings.llm_enabled and settings.anthropic_api_key)
     console.print(Panel.fit(
         "[bold cyan]Prediction Market Trading Bot[/bold cyan]\n"
         "[dim]Scan → Research → Predict → Risk → Postmortem[/dim]\n"
-        f"[dim]Model: {settings.llm_model} | "
-        f"Bankroll: ${settings.bankroll_usdc:,.0f} USDC | "
-        f"Min confidence: {settings.min_confidence:.0%}[/dim]",
+        f"[dim]Model: {settings.llm_model} (LLM {'ON' if llm_on else 'off'}) | "
+        f"Bankroll fallback: ${settings.bankroll_usdc:,.0f} | "
+        f"Min conf: {settings.min_confidence:.0%}[/dim]\n"
+        f"[dim]Entry≥{settings.min_entry_price:.2f} | window "
+        f"{settings.min_time_to_resolution_days}-{settings.max_time_to_resolution_days}d | "
+        f"bets ${settings.min_bet_usdc:.0f}+ (cap {settings.max_bet_fraction:.0%}) | "
+        f"max open {settings.max_open_positions} | "
+        f"{settings.max_positions_per_event}/event | edge≥{settings.min_edge + settings.fee_buffer:.2f}[/dim]",
         border_style="cyan",
     ))
 
@@ -118,6 +126,27 @@ def _print_stats() -> None:
 
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 
+def _llm_available() -> bool:
+    """Probe the Anthropic API with a ~1-token request so every run
+    AUTO-DETECTS whether credits exist — no manual LLM_ENABLED flipping.
+    Cost when credits exist: fractions of a cent per cycle."""
+    if not settings.anthropic_api_key:
+        return False
+    try:
+        import anthropic
+        client = anthropic.Anthropic(
+            api_key=settings.anthropic_api_key, timeout=20.0, max_retries=0,
+        )
+        client.messages.create(
+            model=settings.llm_model, max_tokens=1,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        return True
+    except Exception as e:
+        logger.warning("LLM probe failed — auto FREE MODE this run: %s", str(e)[:160])
+        return False
+
+
 async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = False,
                        max_trades: int = None) -> None:
     """Execute one full scan→research→predict→risk cycle.
@@ -128,6 +157,17 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
 
     cycle_start = datetime.utcnow()
     console.rule(f"[cyan]Cycle started {cycle_start.strftime('%H:%M:%S UTC')}[/cyan]")
+
+    # ── LLM auto-detect: probe credits each cycle and switch modes on the fly ──
+    if not use_mock and settings.llm_enabled and settings.anthropic_api_key:
+        if _llm_available():
+            console.print("  [dim]LLM probe OK — full AI mode[/dim]")
+        else:
+            settings.llm_enabled = False   # this run only (fresh process next run re-probes)
+            console.print(
+                "  [yellow]⚠ LLM unavailable (credits?) — auto FREE MODE for "
+                "this cycle; will re-check next run.[/yellow]"
+            )
 
     # ── Step 0: Settle resolved positions + manage open ones (buy/sell/hold) ───
     if not use_mock:
