@@ -308,13 +308,12 @@ async def predict_market(
         _n_settled = _gts()["wins"] + _gts()["losses"]
     except Exception:
         _n_settled = 0
-    if calibrator.is_trained and _n_settled >= 50:
-        base_xgb_weight = 0.60
-    elif calibrator.is_trained:
-        # Small-sample model: it says P=0.22 on 87% favorites. Even at 0.35
-        # weight it dragged every favorite's estimate ~15 points below price
-        # and blocked all trading. Keep it nearly advisory until it has data.
-        base_xgb_weight = 0.15
+    if calibrator.is_trained:
+        # Trust ramps with data: every settled trade retrains the model AND
+        # increases its vote. 0.15 at ≤20 samples (a 19-sample model said
+        # P=0.22 on 87% favorites — nearly advisory), rising linearly to the
+        # full 0.60 at 60 settled trades.
+        base_xgb_weight = min(0.60, 0.15 + 0.45 * max(0, _n_settled - 20) / 40.0)
     else:
         base_xgb_weight = 0.40
     conf_tilt = (confidence - 0.5) * 0.30            # ±0.15 at confidence extremes
