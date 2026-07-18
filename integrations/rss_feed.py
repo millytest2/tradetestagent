@@ -42,6 +42,12 @@ DEFAULT_FEEDS = [
     # Tech / science
     "https://feeds.arstechnica.com/arstechnica/index",
     "https://www.sciencedaily.com/rss/top/science.xml",
+    # Sports (World-Cup-era props lean on these)
+    "https://www.theguardian.com/football/rss",
+    "https://www.skysports.com/rss/12040",
+    # Business / macro
+    "https://feeds.bloomberg.com/markets/news.rss",
+    "https://www.ft.com/rss/home",
 ]
 
 # In-memory cache: url -> (fetched_at_epoch, entries)

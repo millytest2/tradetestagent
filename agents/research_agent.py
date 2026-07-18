@@ -124,9 +124,9 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
     logger.info("Research agents starting for: %s", question[:80])
 
     # Fire all scrapers + signals concurrently
-    twitter_task = asyncio.create_task(search_twitter(question, max_results=30))
-    reddit_task  = asyncio.create_task(search_reddit(question, max_posts=25))
-    rss_task     = asyncio.create_task(search_rss(question, max_per_feed=10))
+    twitter_task = asyncio.create_task(search_twitter(question, max_results=40))
+    reddit_task  = asyncio.create_task(search_reddit(question, max_posts=30))
+    rss_task     = asyncio.create_task(search_rss(question, max_per_feed=14))
     trends_task  = asyncio.create_task(get_trend_score(question))
     # Whale signal: use the Polymarket US order book when trading there,
     # otherwise the international CLOB book.
@@ -161,10 +161,19 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
     trend_score_val    = trend_score    if isinstance(trend_score, float)    else 50.0
     ob_whale           = whale_signal   if isinstance(whale_signal, float)   else 0.0
     wallet_whale_val   = wallet_whale   if isinstance(wallet_whale, float)   else 0.0
-    # Blend order-book whales + on-chain wallet whales (average the non-zero
-    # signals so the prediction sees combined whale pressure).
-    _whales = [w for w in (ob_whale, wallet_whale_val) if w != 0.0]
-    whale_signal_val   = sum(_whales) / len(_whales) if _whales else 0.0
+    # Blend the two whale reads, weighting the ON-CHAIN WALLET holdings (what
+    # big money actually OWNS — the real "whales buying/selling" signal) far
+    # above the order book (whose walls on liquid markets are mostly
+    # market-maker liquidity, not directional bets).
+    if wallet_whale_val != 0.0 and ob_whale != 0.0:
+        whale_signal_val = 0.75 * wallet_whale_val + 0.25 * ob_whale
+    else:
+        whale_signal_val = wallet_whale_val or ob_whale
+    if whale_signal_val != 0.0:
+        logger.info(
+            "Whale blend %+.2f (wallet=%+.2f, book=%+.2f) for '%s'",
+            whale_signal_val, wallet_whale_val, ob_whale, question[:50],
+        )
 
     sentiment = _compute_sentiment(all_posts)
     narrative = _compare_narrative_to_odds(sentiment, flagged.market.yes_price)
@@ -205,7 +214,7 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
 
 async def research_markets_parallel(
     flagged_markets: list[FlaggedMarket],
-    max_concurrent: int = 5,
+    max_concurrent: int = 8,
 ) -> list[ResearchReport]:
     """
     Run research agents across multiple markets with concurrency control.

@@ -96,29 +96,53 @@ async def get_wallet_whale_signal(question: str, threshold_usd: float = 5000.0) 
         logger.debug("Whale: Data API failed: %s", e)
         return 0.0
 
-    holders = data.get("holders", data) if isinstance(data, dict) else data
-    if not isinstance(holders, list):
-        return 0.0
+    if not _RAW_LOGGED[0]:
+        _RAW_LOGGED[0] = True
+        try:
+            logger.info("Raw holders payload: %s", str(data).replace("\n", " ")[:500])
+        except Exception:
+            pass
 
-    yes_usd = no_usd = 0.0
-    for h in holders:
-        if not isinstance(h, dict):
-            continue
-        amt = float(h.get("amount", h.get("value", h.get("size", 0))) or 0)
-        if amt < threshold_usd:
-            continue
-        idx = h.get("outcomeIndex", h.get("outcome"))
-        if idx in (0, "0", "Yes", "YES"):
-            yes_usd += amt
-        elif idx in (1, "1", "No", "NO"):
-            no_usd += amt
+    # The /holders response is a LIST of {token, holders:[{amount, outcomeIndex}]}
+    # groups (not a flat list). Flatten to every holder dict, whatever the shape.
+    def _flatten(obj) -> list:
+        out = []
+        if isinstance(obj, dict):
+            if any(k in obj for k in ("amount", "shares", "size", "value")) and \
+               any(k in obj for k in ("outcomeIndex", "outcome", "outcome_index")):
+                out.append(obj)
+            for v in obj.values():
+                out.extend(_flatten(v))
+        elif isinstance(obj, list):
+            for v in obj:
+                out.extend(_flatten(v))
+        return out
 
-    total = yes_usd + no_usd
-    if total < threshold_usd:
+    yes_sh = no_sh = 0.0   # these are share counts (the API returns shares, not USD)
+    for h in _flatten(data):
+        amt = 0.0
+        for k in ("amount", "shares", "size", "value"):
+            try:
+                amt = float(h.get(k)); break
+            except (TypeError, ValueError):
+                continue
+        if amt <= 0:
+            continue
+        idx = h.get("outcomeIndex", h.get("outcome", h.get("outcome_index")))
+        if idx in (0, "0", "Yes", "YES", "yes"):
+            yes_sh += amt
+        elif idx in (1, "1", "No", "NO", "no"):
+            no_sh += amt
+
+    total = yes_sh + no_sh
+    if total <= 0:
         return 0.0
-    lean = (yes_usd - no_usd) / total
+    lean = (yes_sh - no_sh) / total
     logger.info(
-        "Wallet-whale lean %+.2f (yes=$%.0f no=$%.0f) on intl '%s'",
-        lean, yes_usd, no_usd, intl_q[:45],
+        "Wallet-whale lean %+.2f (yes=%.0f no=%.0f shares) on intl '%s'",
+        lean, yes_sh, no_sh, intl_q[:45],
     )
     return float(max(-1.0, min(1.0, lean)))
+
+
+_RAW_LOGGED = [False]   # one-time raw-shape diagnostic
