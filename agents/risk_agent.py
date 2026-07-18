@@ -317,6 +317,14 @@ async def evaluate_and_trade(
         bankroll_usdc=bankroll,
     )
 
+    # A backed favorite (favorites fast-path) is a flat-bet win-rate play — Kelly
+    # returns ~0 on a fair-value favorite, so seed the base bet at the meaningful
+    # minimum; the multipliers + cap below still apply.
+    if getattr(prediction, "_favorite_flat", False) and sizing.bet_usdc < settings.min_bet_usdc:
+        sizing = sizing.model_copy(update={"bet_usdc": min(
+            settings.min_bet_usdc, bankroll * settings.max_bet_fraction,
+        )})
+
     # ── Sizing multipliers ────────────────────────────────────────────────────
     # (a) Streak multiplier — press on hot streaks, pull back on cold ones.
     # (b) Conviction scaling — Kelly assumes the win probability is known

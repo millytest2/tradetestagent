@@ -373,23 +373,70 @@ async def predict_market(
             confidence, market.question[:60],
         )
 
-    # ── Determine side and edge ────────────────────────────────────────────────
+    # ── FAVORITES FAST-PATH ─────────────────────────────────────────────────────
+    # The strategy is to BACK strong favorites for their high win rate. The
+    # market price IS the probability, so the edge/2-of-3-vote machinery below
+    # (which hunts for MISpricing and demands every estimator sit above the
+    # price) structurally rejects fair-priced favorites — a 95% favorite got
+    # vetoed because a 19-sample XGBoost said 50%. So in favorites mode: only
+    # the YES side is executable (NO/BUY_SHORT disabled); back a YES favorite
+    # UNLESS the (now credit-backed) AI flags a genuine trap — it explicitly
+    # says NO, its probability is FAR below the price, or whales are heavily
+    # against it. Sized flat (see risk agent), because Kelly won't bet 0-edge.
+    if settings.min_entry_price >= 0.5:
+        if market.yes_price < settings.min_entry_price:
+            logger.info(
+                "Favorites mode: no YES favorite (YES=%.3f < %.2f) — skipping '%s'",
+                market.yes_price, settings.min_entry_price, market.question[:60],
+            )
+            return None
+        if market.yes_price > 0.90:
+            logger.info(
+                "Favorite too thin (YES=%.3f > 0.90; ~%.0f¢ payout not worth the risk) "
+                "— skipping '%s'", market.yes_price, (1 - market.yes_price) * 100,
+                market.question[:55],
+            )
+            return None
+        traps = []
+        if rec == "NO":
+            traps.append("LLM=NO")
+        if calibrated < market.yes_price - 0.20:
+            traps.append(f"model {calibrated:.2f}<<price {market.yes_price:.2f}")
+        if features.whale_bid_imbalance < -0.50:
+            traps.append(f"whales against {features.whale_bid_imbalance:+.2f}")
+        if traps:
+            logger.info("Favorite trap-veto (%s) — skipping '%s'",
+                        "; ".join(traps), market.question[:60])
+            return None
+        logger.info(
+            "★ FAVORITE BACKED: YES on '%s' at %.3f (model=%.3f, LLM=%s, whale=%+.2f)",
+            market.question[:50], market.yes_price, calibrated, rec,
+            features.whale_bid_imbalance,
+        )
+        prediction = Prediction(
+            market_id=market.condition_id,
+            question=market.question,
+            xgb_yes_probability=xgb_prob,
+            llm_yes_probability=llm_prob,
+            calibrated_yes_probability=market.yes_price,   # trade at the market prob
+            market_yes_price=market.yes_price,
+            edge=max(0.0, calibrated - market.yes_price),
+            confidence=min(0.90, market.yes_price),        # favorite's own conviction
+            side=MarketSide.YES,
+            reasoning=f"Favorite backed at {market.yes_price:.2f}. {reasoning}"[:500],
+            should_trade=True,
+        )
+        prediction._favorite_flat = True   # risk agent: flat-bet, don't Kelly-zero it
+        return prediction
+
+    # ── Determine side and edge (non-favorites / edge-hunting mode) ─────────────
     # Require the edge to clear BOTH the minimum edge AND the exchange fee, so
     # we don't take trades whose edge is eaten by fees (Polymarket US markets
     # carry a fee coefficient ~0.05). edge_floor protects against bleeding.
-    # (Done BEFORE the confidence gate so the consensus/favorite boost below can
-    # legitimately help a strong, confirmed setup clear the gate.)
     edge_floor = settings.min_edge + settings.fee_buffer
     yes_edge = calibrated - market.yes_price
     no_edge = (1 - calibrated) - market.no_price
 
-    # Pick the side to trade. In favorites mode the side priced at/above the
-    # entry floor is the only EXECUTABLE one — prefer it even when the other
-    # side shows nominally more edge (the old picker chose NO at 18c, which the
-    # entry floor then blocked, over the 82c favorite). And allow a favorite to
-    # be FAIRLY priced (small tolerance below the edge floor): backing an 82%
-    # favorite at fair value is the win-rate strategy; demanding positive model
-    # edge from small-sample models rejected everything.
     fav_mode = settings.min_entry_price >= 0.5
     # Favorite fair-price tolerance scales with model maturity. A small-sample
     # XGBoost is systematically pessimistic (trained mostly on losses → it says
