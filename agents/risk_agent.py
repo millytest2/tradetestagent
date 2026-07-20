@@ -172,9 +172,16 @@ def _check_risk(
     """
     # 1. Edge too small — final gate uses the FEE-AWARE floor so a trade whose
     #    edge is eaten by fees can't slip through even if built directly.
-    edge_floor = settings.min_edge + settings.fee_buffer
-    if prediction.edge < edge_floor:
-        return False, f"Edge {prediction.edge:.3f} below fee-aware floor {edge_floor:.3f}"
+    #    EXCEPTION: flat-favorite bets are a WIN-RATE play, not an edge play. We
+    #    back a ≥68% favorite at fair value precisely because it's likely to
+    #    resolve YES, so its edge is ~0 by construction. The prediction agent has
+    #    already run its own trap-veto (LLM=NO, model-far-below-price, whales
+    #    against) before flagging it, so the edge floor doesn't apply here.
+    is_flat_favorite = bool(getattr(prediction, "_favorite_flat", False))
+    if not is_flat_favorite:
+        edge_floor = settings.min_edge + settings.fee_buffer
+        if prediction.edge < edge_floor:
+            return False, f"Edge {prediction.edge:.3f} below fee-aware floor {edge_floor:.3f}"
 
     # 2. Confidence too low
     if prediction.confidence < settings.min_confidence:
@@ -377,6 +384,7 @@ async def evaluate_and_trade(
     # ── A/B variant assignment ─────────────────────────────────────────────────
     ab_variant = "A"
     use_governor = True   # default when A/B is disabled
+    is_flat_favorite = bool(getattr(prediction, "_favorite_flat", False))
     if settings.ab_testing_enabled:
         from core.ab_testing import get_variant_for_trade
         variant = get_variant_for_trade()
@@ -385,7 +393,12 @@ async def evaluate_and_trade(
         # Apply variant sizing as a SCALE on the configured kelly_fraction, so
         # the KELLY_FRACTION env knob stays meaningful (a fixed per-variant
         # kelly used to silently override it).
-        if sizing.bet_usdc > 0:
+        #
+        # SKIP for flat-favorite bets: those are sized FLAT (fixed $ per pick),
+        # not by Kelly. A Kelly recompute on a fair-value favorite (win_prob ==
+        # market_price) returns 0 and would wipe the flat seed → the trade would
+        # be dropped by the dust re-check below. Flat means flat.
+        if sizing.bet_usdc > 0 and not is_flat_favorite:
             from utils.kelly import compute_bet_sizing as _cbs
             variant_sizing = _cbs(
                 win_prob=win_prob,
@@ -405,7 +418,7 @@ async def evaluate_and_trade(
     # Variant A applies it (shrinks bets when the account is in a realized
     # drawdown); Variant B skips it (stays aggressive). Real A/B data then shows
     # whether the governor improves results.
-    if use_governor:
+    if use_governor and not is_flat_favorite:
         governor = _drawdown_governor()
         if governor < 1.0 and sizing.bet_usdc > 0:
             sizing = sizing.model_copy(
@@ -434,6 +447,15 @@ async def evaluate_and_trade(
             prediction=prediction,
             sizing=sizing,
         )
+
+    # Flat-favorite guarantee: a backed favorite is sized FLAT at the meaningful
+    # minimum (never Kelly-zeroed). Re-assert it here so nothing upstream can
+    # drop it below the dust floor and silently skip the trade.
+    if is_flat_favorite:
+        sizing = sizing.model_copy(update={"bet_usdc": min(
+            max(sizing.bet_usdc, settings.min_bet_usdc),
+            bankroll * settings.max_bet_fraction,
+        )})
 
     # Re-validate the dust floor AFTER the variant/governor resize — those run
     # past _check_risk and could have shrunk an approved bet below $1.
