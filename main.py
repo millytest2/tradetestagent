@@ -79,9 +79,12 @@ def _print_banner() -> None:
         f"Min conf: {settings.min_confidence:.0%}[/dim]\n"
         f"[dim]Entry≥{settings.min_entry_price:.2f} | window "
         f"{settings.min_time_to_resolution_days}-{settings.max_time_to_resolution_days}d | "
-        f"bets ${settings.min_bet_usdc:.0f}+ (cap {settings.max_bet_fraction:.0%}) | "
+        f"favorite flats ${settings.flat_bet_base:.0f}/${settings.flat_bet_confident:.0f} "
+        f"→ ${settings.flat_bet_scaled:.0f} @${settings.scale_up_bankroll:.0f} "
+        f"(conf≥{settings.favorite_confident_conf:.0%}, cap {settings.max_bet_fraction:.0%}) | "
         f"max open {settings.max_open_positions} | "
-        f"{settings.max_positions_per_event}/event | edge≥{settings.min_edge + settings.fee_buffer:.2f}[/dim]",
+        f"{settings.max_positions_per_event}/event ({settings.max_positions_per_event_confident} if confident) | "
+        f"edge≥{settings.min_edge + settings.fee_buffer:.2f}[/dim]",
         border_style="cyan",
     ))
 
@@ -376,9 +379,21 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             continue
 
         # Event-level cap: don't stack bets on the same event's sub-markets.
+        # A CONFIDENT favorite (YES priced >= favorite_confident_conf) may take a
+        # 2nd slot on one event — high-conviction plays are worth doubling up on;
+        # ordinary picks stay capped at 1 so weak sub-markets can't stack and
+        # compete. The confident price gate matches _flat_favorite_stake's tier.
         ev = _event_key(mkt.slug or mkt.condition_id)
-        if event_counts.get(ev, 0) >= settings.max_positions_per_event:
-            console.print(f"  → [dim]{question[:60]} — event already covered, skipping[/dim]")
+        is_confident_fav = (
+            settings.min_entry_price >= 0.5
+            and mkt.yes_price >= settings.favorite_confident_conf
+        )
+        event_cap = (
+            settings.max_positions_per_event_confident if is_confident_fav
+            else settings.max_positions_per_event
+        )
+        if event_counts.get(ev, 0) >= event_cap:
+            console.print(f"  → [dim]{question[:60]} — event already covered (cap {event_cap}), skipping[/dim]")
             continue
 
         # Stop opening positions once this cycle has spent down the wallet.

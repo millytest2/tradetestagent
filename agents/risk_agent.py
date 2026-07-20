@@ -96,6 +96,28 @@ def _check_rolling_circuit_breaker() -> None:
         logger.warning("Circuit breaker check failed (non-blocking): %s", e)
 
 
+def _flat_favorite_stake(confidence: float, bankroll: float) -> float:
+    """
+    Confidence-tiered, bankroll-aware FLAT stake for a backed favorite.
+
+    Ladder (goal: grow the wallet from ~$37 → $100, then press):
+      • bankroll >= scale_up_bankroll ($100)      → flat_bet_scaled     ($10)
+      • else, confidence >= favorite_confident_conf → flat_bet_confident ($5)
+      • else                                        → flat_bet_base      ($2)
+
+    Always at least min_bet_usdc and never more than max_bet_fraction of the
+    live bankroll (so the ladder can't over-bet a small account).
+    """
+    if bankroll >= settings.scale_up_bankroll:
+        stake = settings.flat_bet_scaled
+    elif confidence >= settings.favorite_confident_conf:
+        stake = settings.flat_bet_confident
+    else:
+        stake = settings.flat_bet_base
+    stake = max(stake, settings.min_bet_usdc)
+    return float(min(stake, bankroll * settings.max_bet_fraction))
+
+
 def _dynamic_kelly_multiplier() -> float:
     """
     Scale bet size based on recent performance over the last 15 settled trades.
@@ -324,13 +346,22 @@ async def evaluate_and_trade(
         bankroll_usdc=bankroll,
     )
 
-    # A backed favorite (favorites fast-path) is a flat-bet win-rate play — Kelly
-    # returns ~0 on a fair-value favorite, so seed the base bet at the meaningful
-    # minimum; the multipliers + cap below still apply.
-    if getattr(prediction, "_favorite_flat", False) and sizing.bet_usdc < settings.min_bet_usdc:
-        sizing = sizing.model_copy(update={"bet_usdc": min(
-            settings.min_bet_usdc, bankroll * settings.max_bet_fraction,
-        )})
+    # A backed favorite (favorites fast-path) is a FLAT-bet win-rate play — Kelly
+    # returns ~0 on a fair-value favorite. Size it on the confidence-tiered,
+    # bankroll-aware staking ladder (see _flat_favorite_stake) and lock that in:
+    # the conviction multiplier and Kelly floor below are edge-hunting logic and
+    # must NOT reshape a flat stake.
+    flat_stake = None
+    if getattr(prediction, "_favorite_flat", False):
+        flat_stake = _flat_favorite_stake(prediction.confidence, bankroll)
+        sizing = sizing.model_copy(update={"bet_usdc": flat_stake})
+        logger.info(
+            "Flat-favorite stake $%.2f (conf=%.2f, bankroll=$%.2f, tier=%s)",
+            flat_stake, prediction.confidence, bankroll,
+            "scaled" if bankroll >= settings.scale_up_bankroll
+            else "confident" if prediction.confidence >= settings.favorite_confident_conf
+            else "base",
+        )
 
     # ── Sizing multipliers ────────────────────────────────────────────────────
     # (a) Streak multiplier — press on hot streaks, pull back on cold ones.
@@ -338,10 +369,11 @@ async def evaluate_and_trade(
     #     exactly, but ours is an estimate; scale by prediction confidence
     #     (floored at 0.5x so low-conviction trades still place small and keep
     #     feeding the learning loop).
+    # Skip both for flat favorites — their stake is fixed by the ladder above.
     kelly_mult = _dynamic_kelly_multiplier()
     conf_scale = 0.5 + 0.5 * min(1.0, max(0.0, prediction.confidence))
     conviction_mult = kelly_mult * conf_scale
-    if conviction_mult != 1.0:
+    if conviction_mult != 1.0 and flat_stake is None:
         adjusted_bet = min(
             sizing.bet_usdc * conviction_mult,
             bankroll * settings.max_bet_fraction,
@@ -351,11 +383,11 @@ async def evaluate_and_trade(
     # Kelly bets in cents and the $1 dust rule would block everything. A signal
     # that earned a positive Kelly bet places at least min_bet_usdc (still
     # capped by max_bet_fraction).
-    if sizing.bet_usdc > 0:
+    if sizing.bet_usdc > 0 and flat_stake is None:
         floored = min(max(sizing.bet_usdc, settings.min_bet_usdc),
                       bankroll * settings.max_bet_fraction)
         sizing = sizing.model_copy(update={"bet_usdc": floored})
-    if conviction_mult != 1.0:
+    if conviction_mult != 1.0 and flat_stake is None:
         logger.info(
             "Sizing: streak=%.2fx × conviction=%.2fx (conf=%.2f) = %.2fx → $%.2f",
             kelly_mult, conf_scale, prediction.confidence, conviction_mult,
@@ -448,14 +480,13 @@ async def evaluate_and_trade(
             sizing=sizing,
         )
 
-    # Flat-favorite guarantee: a backed favorite is sized FLAT at the meaningful
-    # minimum (never Kelly-zeroed). Re-assert it here so nothing upstream can
-    # drop it below the dust floor and silently skip the trade.
+    # Flat-favorite guarantee: a backed favorite is sized FLAT on the staking
+    # ladder (never Kelly-zeroed or conviction-shrunk). Re-assert the exact
+    # ladder stake here so nothing upstream can drop or reshape it.
     if is_flat_favorite:
-        sizing = sizing.model_copy(update={"bet_usdc": min(
-            max(sizing.bet_usdc, settings.min_bet_usdc),
-            bankroll * settings.max_bet_fraction,
-        )})
+        sizing = sizing.model_copy(update={
+            "bet_usdc": _flat_favorite_stake(prediction.confidence, bankroll)
+        })
 
     # Re-validate the dust floor AFTER the variant/governor resize — those run
     # past _check_risk and could have shrunk an approved bet below $1.

@@ -69,6 +69,14 @@ jobs:
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll
           MAX_BET_FRACTION: "0.25"       # per-bet cap raised to 25% (conviction scaling keeps weak bets small)
           MAX_OPEN_POSITIONS: "20"       # room for ~20 concurrent plays (the wallet's cash guard is the real limiter on $35)
+          # ── Flat-favorite staking ladder (goal: $37 → $100 → press to $10 flats) ──
+          FLAT_BET_BASE: "2.0"           # ordinary backed favorite
+          FLAT_BET_CONFIDENT: "5.0"      # high-conviction favorite (YES >= 80%) while under $100
+          FLAT_BET_SCALED: "10.0"        # every favorite once the wallet clears $100
+          FAVORITE_CONFIDENT_CONF: "0.80"        # conviction (≈ YES price) to earn the $5 / 2nd-slot tier
+          SCALE_UP_BANKROLL: "100.0"     # cross this live balance → bigger $10 flats
+          MAX_POSITIONS_PER_EVENT: "1"           # ordinary picks: 1 per event (no stacking weak sub-markets)
+          MAX_POSITIONS_PER_EVENT_CONFIDENT: "2" # confident favorites may double up on one event
           PAUSE_NEW_TRADES: "false"      # flip to "true" to hold positions and open nothing new
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
