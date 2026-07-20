@@ -161,14 +161,19 @@ async def research_market(flagged: FlaggedMarket) -> ResearchReport:
     trend_score_val    = trend_score    if isinstance(trend_score, float)    else 50.0
     ob_whale           = whale_signal   if isinstance(whale_signal, float)   else 0.0
     wallet_whale_val   = wallet_whale   if isinstance(wallet_whale, float)   else 0.0
-    # Blend the two whale reads, weighting the ON-CHAIN WALLET holdings (what
-    # big money actually OWNS — the real "whales buying/selling" signal) far
-    # above the order book (whose walls on liquid markets are mostly
-    # market-maker liquidity, not directional bets).
+    # Blend the two whale reads. The ORDER-BOOK signal is now the reliable
+    # primary: it fires on every market with real numbers and, post de-noise
+    # (integrations/polymarket_us.get_whale_signal), only reads strong when the
+    # book is genuinely two-sided. The on-chain WALLET signal only resolves for
+    # markets that have an international Polymarket mirror (World Cup, national
+    # elections, macro/crypto) — for US state primaries etc. there is no mirror,
+    # so it's 0.0. When it DOES fire (confident match only, see whale_tracker),
+    # it's a useful confirmation of what big money owns, so we let it tilt the
+    # book signal — but book stays the anchor rather than being overridden.
     if wallet_whale_val != 0.0 and ob_whale != 0.0:
-        whale_signal_val = 0.75 * wallet_whale_val + 0.25 * ob_whale
+        whale_signal_val = 0.65 * ob_whale + 0.35 * wallet_whale_val
     else:
-        whale_signal_val = wallet_whale_val or ob_whale
+        whale_signal_val = ob_whale or wallet_whale_val
     if whale_signal_val != 0.0:
         logger.info(
             "Whale blend %+.2f (wallet=%+.2f, book=%+.2f) for '%s'",

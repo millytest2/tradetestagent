@@ -561,8 +561,23 @@ async def evaluate_and_trade(
             "whale_bid_imbalance":     getattr(prediction, "_whale_bid_imbalance", 0.0),
             "trend_score":             getattr(prediction, "_trend_score", 50.0),
         }
+        # Persist the model's OWN prediction alongside the input features, so we
+        # can later measure calibration ("when it said 0.80, did 80% win?") and
+        # validate the strategy. Previously these were computed, drove the trade,
+        # then discarded — leaving no way to check whether the model was right.
+        prediction_snapshot = {
+            "xgb_yes_probability":        getattr(prediction, "xgb_yes_probability", None),
+            "llm_yes_probability":        getattr(prediction, "llm_yes_probability", None),
+            "calibrated_yes_probability": getattr(prediction, "calibrated_yes_probability", None),
+            "market_yes_price":           getattr(prediction, "market_yes_price", None),
+            "edge":                       getattr(prediction, "edge", None),
+            "confidence":                 getattr(prediction, "confidence", None),
+            "side":                       prediction.side.value,
+            "favorite_flat":              bool(getattr(prediction, "_favorite_flat", False)),
+        }
         trade.notes = json.dumps({
             "features": features_snapshot,
+            "prediction": prediction_snapshot,
             "ab_variant": ab_variant,
             "exchange": exchange,
         })

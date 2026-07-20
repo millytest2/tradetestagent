@@ -59,19 +59,32 @@ async def _find_intl_market(question: str):
     if not qk or not isinstance(markets, list):
         return None
 
-    best, best_score = None, 0.0
+    best, best_score, best_overlap_n = None, 0.0, 0
     for m in markets:
         mk = _keywords(m.get("question") or m.get("title") or "")
         if not mk:
             continue
-        overlap = len(qk & mk) / max(1, len(qk))
+        shared = qk & mk
+        overlap = len(shared) / max(1, len(qk))
         if overlap > best_score:
-            best_score, best = overlap, m
+            best_score, best_overlap_n, best = overlap, len(shared), m
 
-    # Require a strong match so we don't attribute the wrong market's whales
-    if best and best_score >= 0.6:
+    # Only attribute another market's whales on an UNAMBIGUOUS mirror match.
+    # This signal is a secondary confirmation (the de-noised order book is the
+    # primary), so a false match — injecting the WRONG market's holders — is far
+    # worse than no match. Require BOTH a high keyword-overlap ratio (0.75) AND
+    # at least 3 shared meaningful keywords, so short/generic questions can't
+    # match on one or two coincidental words. Most US markets (e.g. state
+    # primaries) have no international mirror and correctly return None here.
+    if best and best_score >= 0.75 and best_overlap_n >= 3:
         cond = best.get("conditionId") or best.get("id") or ""
-        return (cond, best.get("question", "")) if cond else None
+        if cond:
+            logger.info(
+                "Wallet-whale matched intl mirror (overlap %.0f%%, %d kw): '%s'",
+                best_score * 100, best_overlap_n,
+                (best.get("question") or "")[:60],
+            )
+            return (cond, best.get("question", ""))
     return None
 
 

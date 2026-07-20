@@ -127,6 +127,92 @@ def _print_stats() -> None:
     console.print(table)
 
 
+def _print_calibration() -> None:
+    """Model calibration report: bucket settled trades by the model's OWN
+    predicted probability and compare to the actual win rate in each bucket.
+    A well-calibrated model wins ~p% of the trades it rated p%. Reads the
+    prediction snapshot persisted in TradeRow.notes (added alongside features)."""
+    import json
+    from core.database import SessionLocal, TradeRow
+
+    _print_banner()
+    rows = []
+    try:
+        with SessionLocal() as _s:
+            settled = (
+                _s.query(TradeRow)
+                .filter(TradeRow.outcome.in_(["WIN", "LOSS"]))
+                .order_by(TradeRow.settled_at.asc())
+                .all()
+            )
+        for t in settled:
+            try:
+                pred = (json.loads(t.notes or "{}") or {}).get("prediction") or {}
+            except Exception:
+                pred = {}
+            p = pred.get("calibrated_yes_probability")
+            if p is None:
+                continue   # pre-fix trade with no persisted prediction
+            rows.append((float(p), t.outcome == "WIN"))
+    except Exception as e:
+        console.print(f"[red]Calibration read failed: {e}[/red]")
+        return
+
+    total_settled = 0
+    try:
+        with SessionLocal() as _s:
+            total_settled = _s.query(TradeRow).filter(
+                TradeRow.outcome.in_(["WIN", "LOSS"])).count()
+    except Exception:
+        pass
+
+    if not rows:
+        console.print(Panel.fit(
+            "[yellow]No calibration data yet.[/yellow]\n"
+            f"{total_settled} settled trades, but none carry a persisted model "
+            "prediction.\nThe prediction snapshot ships now — this report fills "
+            "in as NEW trades settle.",
+            border_style="yellow", title="Model Calibration",
+        ))
+        return
+
+    buckets = [(0.0, 0.6), (0.6, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01)]
+    table = Table(title="Model Calibration (predicted vs actual)",
+                  box=box.ROUNDED, border_style="cyan")
+    table.add_column("Predicted prob", style="bold")
+    table.add_column("Trades", justify="right")
+    table.add_column("Actual win rate", justify="right")
+    table.add_column("Mean predicted", justify="right")
+    table.add_column("Gap", justify="right")
+
+    n_with_pred = len(rows)
+    for lo, hi in buckets:
+        b = [(p, w) for (p, w) in rows if lo <= p < hi]
+        if not b:
+            continue
+        actual = sum(1 for _, w in b if w) / len(b)
+        mean_p = sum(p for p, _ in b) / len(b)
+        gap = actual - mean_p
+        gcol = "green" if abs(gap) <= 0.10 else "yellow" if abs(gap) <= 0.20 else "red"
+        table.add_row(
+            f"{lo:.0%}–{hi if hi <= 1 else 1.0:.0%}",
+            str(len(b)),
+            f"{actual:.0%}",
+            f"{mean_p:.0%}",
+            f"[{gcol}]{gap:+.0%}[/{gcol}]",
+        )
+
+    overall_actual = sum(1 for _, w in rows if w) / n_with_pred
+    overall_pred = sum(p for p, _ in rows) / n_with_pred
+    console.print(table)
+    console.print(
+        f"[dim]{n_with_pred} of {total_settled} settled trades carry a persisted "
+        f"prediction. Overall: predicted {overall_pred:.0%}, actual "
+        f"{overall_actual:.0%} (gap {overall_actual - overall_pred:+.0%}). "
+        f"|gap| ≤ 10% per bucket = well-calibrated.[/dim]"
+    )
+
+
 # ── Core pipeline ─────────────────────────────────────────────────────────────
 
 def _llm_available() -> bool:
@@ -845,6 +931,10 @@ def parse_args() -> argparse.Namespace:
         help="Print performance statistics then exit",
     )
     p.add_argument(
+        "--calibration", action="store_true",
+        help="Print model calibration report (predicted prob vs actual win rate) then exit",
+    )
+    p.add_argument(
         "--interval", type=int, default=settings.scan_interval_seconds,
         help=f"Scan interval in seconds (default: {settings.scan_interval_seconds})",
     )
@@ -891,6 +981,10 @@ if __name__ == "__main__":
     if args.stats:
         _print_banner()
         _print_stats()
+        sys.exit(0)
+
+    if args.calibration:
+        _print_calibration()
         sys.exit(0)
 
     if args.retrain:

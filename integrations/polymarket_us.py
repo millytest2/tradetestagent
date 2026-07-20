@@ -242,11 +242,28 @@ async def get_whale_signal(market, threshold_usd: float = 1500.0) -> float:
         if total < threshold_usd:
             return 0.0
         imbalance = (bid_usd - ask_usd) / total
+
+        # ── De-noise: require REAL two-sided depth before a STRONG reading is
+        # trusted. A one-sided book (e.g. bids=$0, asks=$26,667 → -1.00) is a
+        # liquidity artifact — the market-maker simply hasn't posted the other
+        # side — NOT big money betting against. A transient snapshot exactly like
+        # that false-vetoed a good favorite in a prior run. Rule: unless BOTH
+        # sides carry at least one whale order (>= threshold_usd), the signal is
+        # capped to ±0.30 so it can't cross the -0.50 favorite-veto line on
+        # liquidity alone. A genuinely deep, two-sided book that is still
+        # lopsided (real money on both sides, one clearly dominant) keeps its
+        # full magnitude and can still veto — that's a real whale, not an
+        # artifact.
+        minority = min(bid_usd, ask_usd)
+        two_sided = minority >= threshold_usd
+        signal = imbalance if two_sided else max(-0.30, min(0.30, imbalance))
         logger.info(
-            "PM-US whale: %+.2f (bids=$%.0f asks=$%.0f) for %s",
-            imbalance, bid_usd, ask_usd, slug,
+            "PM-US whale: %+.2f (raw %+.2f, %s; bids=$%.0f asks=$%.0f) for %s",
+            signal, imbalance,
+            "two-sided" if two_sided else "ONE-SIDED→capped",
+            bid_usd, ask_usd, slug,
         )
-        return float(max(-1.0, min(1.0, imbalance)))
+        return float(max(-1.0, min(1.0, signal)))
     except Exception as e:
         logger.debug("PM-US whale signal failed for %s: %s", slug, e)
         return 0.0
