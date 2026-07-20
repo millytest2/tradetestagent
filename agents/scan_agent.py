@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import random
+import re
+from datetime import datetime, timezone
 from typing import Optional
 
 from config import settings
@@ -17,6 +19,34 @@ from core.models import FlaggedMarket, Market
 from integrations.polymarket import get_active_markets
 
 logger = logging.getLogger(__name__)
+
+_SLUG_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def _slug_event_date_passed(slug: str, grace_days: int = 1) -> bool:
+    """True if the market's slug embeds an event date already in the PAST
+    (older than `grace_days` days ago).
+
+    Polymarket US slugs embed the real-world event date, e.g.
+    `enwc-usgubp-ok-2026-06-16-rep-mikmaz` (Oklahoma primary, June 16). The
+    exchange's own `endDate`/settlement field can lag weeks behind that event
+    (a market stays `expired: False` long after the vote), so the time-to-
+    resolution filter — which reads `endDate` — can let a stale, already-decided
+    market through. This guard rejects on the event date itself so we never open
+    a NEW position on a market whose event has already happened. Non-dated slugs
+    (e.g. international CLOB) return False and are unaffected."""
+    if not slug:
+        return False
+    m = _SLUG_DATE_RE.search(slug)
+    if not m:
+        return False
+    try:
+        y, mo, d = (int(x) for x in m.groups())
+        event_date = datetime(y, mo, d, tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return False
+    age_days = (datetime.now(timezone.utc) - event_date).total_seconds() / 86400
+    return age_days > grace_days
 
 
 def _passes_base_filter(market: Market) -> bool:
@@ -30,6 +60,13 @@ def _passes_base_filter(market: Market) -> bool:
     # HARD RULE (from PatternAgent postmortem): never trade already-expired markets.
     # time_to_resolution_days < 0 means the deadline has passed.
     if market.time_to_resolution_days < 0:
+        return False
+    # HARD RULE: never trade a market whose SLUG event date has already passed,
+    # even if the exchange's endDate/settlement field still reads as future/
+    # unsettled. Catches stale post-event markets the endDate filter misses
+    # (e.g. an already-held June primary still listed in July).
+    if _slug_event_date_passed(market.slug):
+        logger.debug("Skipping past-event market (slug date passed): %s", market.slug)
         return False
     if market.time_to_resolution_days < settings.min_time_to_resolution_days:
         return False
