@@ -247,6 +247,9 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     cycle_start = datetime.utcnow()
     console.rule(f"[cyan]Cycle started {cycle_start.strftime('%H:%M:%S UTC')}[/cyan]")
 
+    positions_mark = 0.0    # current mark value of open positions (for total equity)
+    total_equity = None     # real account value = cash + open positions (set at balance fetch)
+
     # ── LLM auto-detect: probe credits each cycle and switch modes on the fly ──
     if not use_mock and settings.llm_enabled and settings.anthropic_api_key:
         if _llm_available():
@@ -284,7 +287,7 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         # Real-time P&L: mark open positions to current market so the true
         # (unrealized) position is visible every cycle, not just at settlement.
         try:
-            await _report_unrealized_pnl()
+            _, positions_mark = await _report_unrealized_pnl()
         except Exception as e:
             logger.debug("Unrealized P&L report failed (non-blocking): %s", e)
 
@@ -396,10 +399,25 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             else:
                 spendable = max(0.0, settings.bankroll_usdc - committed)
             live_bankroll = spendable
+            # Total account equity = spendable cash + current mark value of open
+            # positions. The exchange's balances endpoint returns cash only (no
+            # equity field → total=n/a), so compute it ourselves from the marked
+            # positions. This is the real "what we've got" number that should
+            # track toward the $100 goal — not cash alone (which drops as capital
+            # moves into positions) nor the old config-based estimate.
+            cash_base = cash if cash is not None else live_bankroll
+            total_equity = cash_base + positions_mark
             console.print(
                 f"  [dim]Equity: {('$%.2f' % total) if total is not None else 'n/a'} | "
                 f"cash: {('$%.2f' % cash) if cash is not None else 'n/a'} | "
                 f"committed(open): ${committed:.2f} | available: ${live_bankroll:.2f}[/dim]"
+            )
+            goal = settings.scale_up_bankroll
+            gcol = "green" if total_equity >= goal else "cyan"
+            console.print(
+                f"  [{gcol}]Total equity: ${total_equity:.2f}[/{gcol}] "
+                f"[dim](cash ${cash_base:.2f} + open positions ${positions_mark:.2f}) "
+                f"— {total_equity / goal:.0%} of ${goal:.0f} goal[/dim]"
             )
             if live_bankroll < RESERVE_FLOOR:
                 console.print(
@@ -583,8 +601,14 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     # ── Milestone check ───────────────────────────────────────────────────────
     try:
         from utils.notifications import check_and_notify_milestone
-        stats = get_trade_stats()
-        bankroll_now = settings.bankroll_usdc + stats.get("total_pnl_usdc", 0)
+        # Prefer the REAL account equity (live cash + open-position mark value)
+        # computed this cycle. Fall back to the config-based estimate only if the
+        # live balance fetch didn't run (mock / non-PM-US / fetch failed).
+        if total_equity is not None:
+            bankroll_now = total_equity
+        else:
+            stats = get_trade_stats()
+            bankroll_now = settings.bankroll_usdc + stats.get("total_pnl_usdc", 0)
         check_and_notify_milestone(bankroll_now)
     except Exception as e:
         logger.debug("Milestone check failed (non-blocking): %s", e)
@@ -593,16 +617,17 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     await _run_pending_postmortems()
 
 
-async def _report_unrealized_pnl() -> float:
+async def _report_unrealized_pnl() -> tuple[float, float]:
     """
     Mark every open (PENDING) position to the current market price and print the
     unrealized P&L, so the true live position is visible each cycle instead of
-    the $0 the ledger shows until a market actually resolves. Returns the total
-    unrealized P&L in USDC.
+    the $0 the ledger shows until a market actually resolves. Returns
+    (unrealized_pnl_usdc, positions_mark_value_usdc) — the second is the current
+    total mark value of all open positions, used to compute total account equity.
     """
     exchange = settings.live_exchange.lower()
     if exchange not in ("polymarket_us", "polymarketus", "pmus"):
-        return 0.0
+        return 0.0, 0.0
     from core.database import SessionLocal, TradeRow
     from integrations.polymarket_us import get_current_price
 
@@ -612,7 +637,7 @@ async def _report_unrealized_pnl() -> float:
             for r in s.query(TradeRow).filter(TradeRow.outcome == "PENDING").all()
         ]
     if not open_pos:
-        return 0.0
+        return 0.0, 0.0
 
     total_cost = 0.0
     total_value = 0.0
@@ -649,7 +674,7 @@ async def _report_unrealized_pnl() -> float:
             f"      [{c}]{pnl:+.2f}[/{c}] [dim]({pct:+.0f}%)  {slug[:44]}  "
             f"entry {entry:.3f} → {cur_s}[/dim]"
         )
-    return unrealized
+    return unrealized, total_value
 
 
 async def _reconcile_exchange_positions() -> int:
