@@ -437,6 +437,7 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     # bets on the same event — e.g. 5 different Wimbledon-winner candidates
     # compete with each other: at most one can win.
     event_counts: dict[str, int] = {}
+    event_spend: dict[str, float] = {}   # combined $ committed per event this cycle
     try:
         from core.database import SessionLocal, TradeRow
         with SessionLocal() as _s:
@@ -515,6 +516,29 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             f"| conf={prediction.confidence:.2f}"
         )
 
+        # Per-EVENT dollar cap: "2 confident positions per event" is allowed, but
+        # not at the cost of over-concentrating one correlated outcome (e.g. two
+        # YES bets on the same GDP event = $10 on a $22 wallet). Estimate this
+        # trade's stake (flat-favorite ladder when in favorites mode) and skip if
+        # it would push the COMBINED stake on this event past
+        # max_event_exposure_fraction of the wallet.
+        if running_bankroll is not None:
+            from agents.risk_agent import _flat_favorite_stake
+            est_stake = (
+                _flat_favorite_stake(prediction.confidence, running_bankroll)
+                if getattr(prediction, "_favorite_flat", False)
+                else settings.min_bet_usdc
+            )
+            event_cap_usd = running_bankroll * settings.max_event_exposure_fraction
+            if event_spend.get(ev, 0.0) + est_stake > event_cap_usd + 1e-6:
+                console.print(
+                    f"  → [dim]{question[:50]} — event $ cap "
+                    f"(${event_spend.get(ev, 0.0):.0f}+${est_stake:.0f} > "
+                    f"${event_cap_usd:.0f} = {settings.max_event_exposure_fraction:.0%} "
+                    f"of wallet), skipping[/dim]"
+                )
+                continue
+
         # Step 4: Risk + Execution (sized off remaining available balance)
         try:
             decision = await evaluate_and_trade(
@@ -538,6 +562,7 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             if running_bankroll is not None:
                 running_bankroll = max(0.0, running_bankroll - sz.bet_usdc)
             event_counts[ev] = event_counts.get(ev, 0) + 1   # cap within-cycle too
+            event_spend[ev] = event_spend.get(ev, 0.0) + sz.bet_usdc  # $ cap within-cycle
             trades_placed += 1
             if max_trades and trades_placed >= max_trades:
                 console.print(
