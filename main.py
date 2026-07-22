@@ -413,11 +413,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 f"committed(open): ${committed:.2f} | available: ${live_bankroll:.2f}[/dim]"
             )
             goal = settings.scale_up_bankroll
-            gcol = "green" if total_equity >= goal else "cyan"
+            if total_equity >= goal:
+                gcol, goal_str = "green", f"— ${goal:.0f} goal REACHED"
+            else:
+                gcol = "cyan"
+                goal_str = f"— need +${goal - total_equity:.2f} to reach ${goal:.0f} goal"
             console.print(
                 f"  [{gcol}]Total equity: ${total_equity:.2f}[/{gcol}] "
                 f"[dim](cash ${cash_base:.2f} + open positions ${positions_mark:.2f}) "
-                f"— {total_equity / goal:.0%} of ${goal:.0f} goal[/dim]"
+                f"{goal_str}[/dim]"
             )
             if live_bankroll < RESERVE_FLOOR:
                 console.print(
