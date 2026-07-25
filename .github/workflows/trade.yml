@@ -65,7 +65,7 @@ jobs:
           FEE_BUFFER: "0.0"
           MIN_ENTRY_PRICE: "0.68"        # FAVORITES MODE: only bet sides priced >= 68% → targets ~70% win rate
           MIN_TIME_TO_RESOLUTION_DAYS: "0"    # short-term "obvious" plays
-          MAX_TIME_TO_RESOLUTION_DAYS: "30"   # ...through the 10-20 day (slightly riskier) favorites; resolution-spread surfaces the soonest first
+          MAX_TIME_TO_RESOLUTION_DAYS: "60"   # ...through ~2-month favorites; widened 30→60 so the bot has fresh favorites to deploy idle cash into (it already holds every <30d one)
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll
           MAX_BET_FRACTION: "0.25"       # per-bet cap raised to 25% (conviction scaling keeps weak bets small)
           MAX_OPEN_POSITIONS: "20"       # room for ~20 concurrent plays (the wallet's cash guard is the real limiter on $35)
