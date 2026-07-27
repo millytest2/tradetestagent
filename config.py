@@ -51,17 +51,17 @@ class Settings(BaseSettings):
     max_positions_per_event: int = Field(default=1, ge=1, le=10)  # never stack bets on the same event (5 Wimbledon picks compete with each other)
     min_bet_usdc: float = Field(default=2.0, ge=1.0)  # meaningful minimum: a signal that passes every gate bets at least this (small bankrolls compute Kelly bets in cents)
 
-    # ── Flat-favorite staking ladder (backed favorites are sized flat, not Kelly) ─
-    # Below scale_up_bankroll: base stake, stepped up to the confident stake when
-    # the favorite's conviction clears favorite_confident_conf. At/above
-    # scale_up_bankroll: the larger scaled stake. Always capped by
-    # max_bet_fraction. Goal ladder: grow $37 → $100 on $2/$5 flats, then press
-    # to $10 flats once the account clears $100.
-    flat_bet_base: float = Field(default=2.0, ge=1.0)        # ordinary backed favorite
-    flat_bet_confident: float = Field(default=5.0, ge=1.0)   # high-conviction favorite (pre-$100)
-    flat_bet_scaled: float = Field(default=10.0, ge=1.0)     # every favorite once bankroll >= scale_up_bankroll
-    favorite_confident_conf: float = Field(default=0.80, ge=0.5, le=1.0)  # conviction to earn the confident stake
-    scale_up_bankroll: float = Field(default=100.0, ge=1.0)  # cross this → bigger $10 flats
+    # ── Favorite staking (backed favorites are sized off bankroll, not Kelly) ───
+    # SUPERSEDED by confident_stake_pct / ordinary_stake_pct below: stakes are now
+    # a continuous PERCENTAGE of the live wallet, so there is no longer a plateau
+    # where a $37 and a $99 account bet the same $5. The flat_bet_* values are
+    # retained because scan_agent derives its liquidity floor from the largest
+    # stake we would ever place, and for fallback/reference.
+    flat_bet_base: float = Field(default=2.0, ge=1.0)        # legacy ordinary flat
+    flat_bet_confident: float = Field(default=5.0, ge=1.0)   # legacy confident flat
+    flat_bet_scaled: float = Field(default=10.0, ge=1.0)     # legacy scaled flat (also sizes the liquidity floor)
+    favorite_confident_conf: float = Field(default=0.80, ge=0.5, le=1.0)  # conviction to earn the confident stake %
+    scale_up_bankroll: float = Field(default=100.0, ge=1.0)  # goal marker: progress is reported against this
     max_positions_per_event_confident: int = Field(default=2, ge=1, le=10)  # allow a 2nd position on one event only for confident favorites
     max_event_exposure_fraction: float = Field(default=0.25, ge=0.01, le=1.0)  # cap COMBINED stake on one event to this fraction of the wallet, so "2 confident positions" can't over-concentrate a correlated outcome (e.g. two YES bets on the same GDP event)
     strategy_epoch: str = "2026-07-03"  # circuit breaker judges only trades placed on/after this date — trades from before the big bug-fix wave (wrong-side fills, longshots, stacking) don't indict the current strategy

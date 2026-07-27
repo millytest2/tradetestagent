@@ -79,9 +79,9 @@ def _print_banner() -> None:
         f"Min conf: {settings.min_confidence:.0%}[/dim]\n"
         f"[dim]Entry≥{settings.min_entry_price:.2f} | window "
         f"{settings.min_time_to_resolution_days}-{settings.max_time_to_resolution_days}d | "
-        f"favorite flats ${settings.flat_bet_base:.0f}/${settings.flat_bet_confident:.0f} "
-        f"→ ${settings.flat_bet_scaled:.0f} @${settings.scale_up_bankroll:.0f} "
-        f"(conf≥{settings.favorite_confident_conf:.0%}, cap {settings.max_bet_fraction:.0%}) | "
+        f"stake {settings.ordinary_stake_pct:.1%}/{settings.confident_stake_pct:.1%} of wallet "
+        f"(conf≥{settings.favorite_confident_conf:.0%}, min ${settings.min_bet_usdc:.0f}, "
+        f"cap {settings.max_bet_fraction:.0%}) | "
         f"max open {settings.max_open_positions} | "
         f"{settings.max_positions_per_event}/event ({settings.max_positions_per_event_confident} if confident) | "
         f"edge≥{settings.min_edge + settings.fee_buffer:.2f}[/dim]",
@@ -308,7 +308,8 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         raw = make_markets()
         flagged = []
         for m in raw:
-            if _passes_base_filter(m):
+            passes, _why = _passes_base_filter(m)   # (ok, drop_reason)
+            if passes:
                 is_flagged, reason = _detect_anomaly(m)
                 m.is_flagged = is_flagged; m.flag_reason = reason
                 score = _priority_score(m, reason)
@@ -622,11 +623,11 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         console.print(
             f"  [yellow]⚠ 0 trades with ${live_bankroll:.2f} idle cash[/yellow] "
             f"[dim]— candidate pool was {len(flagged)} market(s) after filters. "
-            f"Cash is NOT the constraint: stakes are flat "
-            f"(${settings.flat_bet_base:.0f}/${settings.flat_bet_confident:.0f}"
-            f"/${settings.flat_bet_scaled:.0f} @${settings.scale_up_bankroll:.0f}), so more "
-            f"cash only helps if more markets qualify. See the 'Scan funnel' line "
-            f"above for which filter is binding.[/dim]"
+            f"Extra cash raises the SIZE of each bet "
+            f"({settings.confident_stake_pct:.1%} of wallet when confident), not the "
+            f"NUMBER of qualifying markets — so idle cash here means the pool is the "
+            f"constraint, not the balance. See the 'Scan funnel' line above for "
+            f"which filter is binding.[/dim]"
         )
 
     # ── Milestone check ───────────────────────────────────────────────────────

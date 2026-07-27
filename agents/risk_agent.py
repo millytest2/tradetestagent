@@ -397,12 +397,13 @@ async def evaluate_and_trade(
     if getattr(prediction, "_favorite_flat", False):
         flat_stake = _flat_favorite_stake(prediction.confidence, bankroll)
         sizing = sizing.model_copy(update={"bet_usdc": flat_stake})
+        tier = ("confident" if prediction.confidence >= settings.favorite_confident_conf
+                else "ordinary")
+        pct = (settings.confident_stake_pct if tier == "confident"
+               else settings.ordinary_stake_pct)
         logger.info(
-            "Flat-favorite stake $%.2f (conf=%.2f, bankroll=$%.2f, tier=%s)",
-            flat_stake, prediction.confidence, bankroll,
-            "scaled" if bankroll >= settings.scale_up_bankroll
-            else "confident" if prediction.confidence >= settings.favorite_confident_conf
-            else "base",
+            "Favorite stake $%.2f = %.1f%% of $%.2f bankroll (conf=%.2f, tier=%s)",
+            flat_stake, pct * 100, bankroll, prediction.confidence, tier,
         )
 
     # ── Sizing multipliers ────────────────────────────────────────────────────
