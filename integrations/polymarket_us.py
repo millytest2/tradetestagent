@@ -773,7 +773,99 @@ async def get_open_positions() -> set[str]:
     slugs = _extract_position_slugs(raw)
     logger.info("Exchange reports %d open position(s): %s",
                 len(slugs), sorted(slugs)[:10])
+    _LAST_POSITIONS_RAW["raw"] = raw   # for get_open_position_details()
     return slugs
+
+
+# Cache of the most recent raw positions payload so callers that need the full
+# detail (shares/cost/price) don't have to re-hit the API in the same cycle.
+_LAST_POSITIONS_RAW: dict = {}
+
+
+def _extract_position_details(raw) -> dict[str, dict]:
+    """Parse a positions payload into {slug: {shares, cost, avg_price, side}}.
+
+    Companion to _extract_position_slugs, which returns slugs only. Needed to
+    ADOPT positions that exist on the exchange but are missing from our trade DB
+    (e.g. opened before a cache loss) — adopting them requires a real cost basis,
+    not just the slug.
+    """
+    out: dict[str, dict] = {}
+    if raw is None:
+        return out
+    container = raw
+    if isinstance(raw, dict):
+        for k in ("positions", "data", "result", "items", "holdings"):
+            if k in raw and isinstance(raw[k], (list, dict)):
+                container = raw[k]
+                break
+    if isinstance(container, dict):
+        pairs = [(str(k), v) for k, v in container.items()]
+    elif isinstance(container, (list, tuple)):
+        pairs = [(None, v) for v in container]
+    else:
+        return out
+
+    for key_slug, entry in pairs:
+        if not isinstance(entry, dict):
+            continue
+        d = {str(k).lower(): v for k, v in entry.items()}
+
+        def pick(*keys):
+            for k in keys:
+                if k in d:
+                    v = d[k]
+                    # some fields arrive as {"value": "0.8280"}
+                    if isinstance(v, dict) and "value" in v:
+                        v = v["value"]
+                    n = _num(v)
+                    if n is not None:
+                        return n
+            return None
+
+        shares = pick("netposition", "net_position", "size", "quantity", "shares")
+        if shares is None or abs(shares) < 1e-9:
+            continue
+        cost = pick("cost", "basecost", "base_cost", "totalcost")
+        avg = pick("avgpx", "avg_px", "costpershare", "cost_per_share", "avgprice")
+        if cost is None and avg is not None:
+            cost = abs(shares) * avg
+        if avg is None and cost is not None and shares:
+            avg = cost / abs(shares)
+
+        slug = key_slug
+        if not slug:
+            meta = d.get("marketmetadata") or {}
+            if isinstance(meta, dict):
+                slug = meta.get("slug") or meta.get("Slug")
+        if not slug:
+            for k in ("marketslug", "market_slug", "slug", "market", "market_id"):
+                if d.get(k):
+                    slug = d[k]
+                    break
+        if not slug:
+            continue
+        out[str(slug)] = {
+            "shares": abs(shares),
+            "cost": cost,
+            "avg_price": avg,
+            # netPosition > 0 on this venue means a long/YES holding
+            "side": "YES" if shares > 0 else "NO",
+        }
+    return out
+
+
+async def get_open_position_details() -> dict[str, dict]:
+    """{slug: {shares, cost, avg_price, side}} for every position we hold.
+
+    Reuses the payload cached by get_open_positions() when available so a cycle
+    doesn't hit the positions endpoint twice.
+    """
+    raw = _LAST_POSITIONS_RAW.get("raw")
+    if raw is None:
+        await get_open_positions()
+        raw = _LAST_POSITIONS_RAW.get("raw")
+    return _extract_position_details(raw)
 
 
 async def place_trade(

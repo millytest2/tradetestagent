@@ -278,6 +278,19 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 console.print(f"  [yellow]↔ Reconciled {reconciled} manually-closed position(s) for learning[/yellow]")
         except Exception as e:
             logger.debug("Reconciliation failed (non-blocking): %s", e)
+        # Reverse direction: adopt positions the EXCHANGE holds that our DB has
+        # never seen (opened before a cache loss, or placed by hand). Until they
+        # exist as rows they are invisible — never settled, never in P&L, never
+        # learned from — while still holding real money.
+        try:
+            adopted = await _adopt_untracked_positions()
+            if adopted:
+                console.print(
+                    f"  [yellow]⊕ Adopted {adopted} untracked exchange position(s) "
+                    f"into the ledger[/yellow]"
+                )
+        except Exception as e:
+            logger.debug("Position adoption failed (non-blocking): %s", e)
         try:
             exited = await _manage_open_positions(dry_run=dry_run)
             if exited:
@@ -752,6 +765,68 @@ async def _reconcile_exchange_positions() -> int:
                     tid, slug, outcome.value, pnl)
         reconciled += 1
     return reconciled
+
+
+async def _adopt_untracked_positions() -> int:
+    """Import exchange positions the trade DB has no row for.
+
+    The dedup/reconcile pass only looks DB → exchange (is a row we hold still
+    open?). Nothing looked the other way, so a position the exchange holds but
+    the DB never recorded — opened before the GitHub-cache was lost, or placed
+    by hand — stayed permanently invisible: excluded from committed capital,
+    from the P&L mark, from settlement, and from the learning loop, while still
+    holding real money. Adopt those as PENDING rows using the exchange's own
+    cost basis so they behave like any other tracked trade from now on.
+
+    Returns how many rows were created.
+    """
+    exchange = settings.live_exchange.lower()
+    if exchange not in ("polymarket_us", "polymarketus", "pmus"):
+        return 0
+    from integrations.polymarket_us import get_open_position_details
+    from core.database import SessionLocal, TradeRow, save_trade
+    from core.models import Trade, MarketSide
+
+    details = await get_open_position_details()
+    if not details:
+        return 0
+
+    with SessionLocal() as s:
+        # Any row for this market, at any status — never adopt a market we have
+        # history for, or a settled trade would be resurrected as open.
+        known = {r.market_id for r in s.query(TradeRow.market_id).distinct().all()}
+
+    adopted = 0
+    for slug, info in details.items():
+        if slug in known:
+            continue
+        shares = info.get("shares") or 0.0
+        entry = info.get("avg_price")
+        cost = info.get("cost")
+        if not shares or entry is None:
+            logger.debug("Skipping adoption of %s — incomplete cost basis", slug)
+            continue
+        if cost is None:
+            cost = shares * entry
+        try:
+            save_trade(Trade(
+                market_id=slug,
+                question=f"[adopted from exchange] {slug}",
+                side=MarketSide.YES if info.get("side") == "YES" else MarketSide.NO,
+                entry_price=float(entry),
+                bet_usdc=float(cost),
+                shares=float(shares),
+                tx_hash="",
+                notes="adopted: held on exchange but missing from trade DB",
+            ))
+            logger.info(
+                "Adopted untracked position %s — %.2f shares @ %.3f (cost $%.2f)",
+                slug, shares, entry, cost,
+            )
+            adopted += 1
+        except Exception as e:
+            logger.warning("Could not adopt position %s: %s", slug, e)
+    return adopted
 
 
 async def _settle_pending_trades() -> int:
