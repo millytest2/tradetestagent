@@ -78,10 +78,17 @@ jobs:
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll
           MAX_BET_FRACTION: "0.25"       # per-bet cap raised to 25% (conviction scaling keeps weak bets small)
           MAX_OPEN_POSITIONS: "20"       # room for ~20 concurrent plays (the wallet's cash guard is the real limiter on $35)
-          # ── Flat-favorite staking ladder (goal: $37 → $100 → press to $10 flats) ──
-          FLAT_BET_BASE: "2.0"           # ordinary backed favorite
-          FLAT_BET_CONFIDENT: "5.0"      # high-conviction favorite (YES >= 80%) while under $100
-          FLAT_BET_SCALED: "10.0"        # every favorite once the wallet clears $100
+          # ── Continuous stake sizing (replaces the flat ladder's $100 cliff) ──
+          # Bets are a PERCENTAGE of the live wallet, so every dollar gained or
+          # deposited makes the next bet a little bigger, and every dollar lost
+          # makes it smaller — no plateau where $37 and $99 bet identically.
+          # $37→$2.96 | $65→$5.20 | $100→$8.00 | $250→$20.00 (confident)
+          CONFIDENT_STAKE_PCT: "0.08"    # high-conviction favorite: 8% of bankroll
+          ORDINARY_STAKE_PCT: "0.035"    # ordinary backed favorite: 3.5%
+          MAX_TRADES_PER_CYCLE: "8"      # ceiling; actual budget scales with bankroll (<$50→2, <$100→3, <$250→5)
+          FLAT_BET_BASE: "2.0"           # legacy ladder (retained for reference/fallback)
+          FLAT_BET_CONFIDENT: "5.0"
+          FLAT_BET_SCALED: "10.0"
           FAVORITE_CONFIDENT_CONF: "0.80"        # conviction (≈ YES price) to earn the $5 / 2nd-slot tier
           SCALE_UP_BANKROLL: "100.0"     # cross this live balance → bigger $10 flats
           MAX_POSITIONS_PER_EVENT: "1"           # ordinary picks: 1 per event (no stacking weak sub-markets)
@@ -89,7 +96,10 @@ jobs:
           PAUSE_NEW_TRADES: "false"      # flip to "true" to hold positions and open nothing new
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
-        run: python main.py --live --run-once --max-trades 8 --top-n 35
+        # No --max-trades: the per-cycle trade budget is derived from the LIVE
+        # wallet (see _max_trades_for_bankroll). Passing it here would pin the
+        # budget at 8 and defeat the bankroll scaling.
+        run: python main.py --live --run-once --top-n 35
 
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"

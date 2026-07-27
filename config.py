@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     # $2-$10, so demanding $1,000 of book depth rejected ~99% of the venue for no
     # execution benefit. Require stake x multiple, never below the absolute floor.
     liquidity_stake_multiple: float = Field(default=25.0, ge=1.0, le=500.0)
+    # Continuous stake sizing (replaces the flat $2/$5/$10 ladder's cliff at $100):
+    # every dollar gained/deposited immediately nudges the next bet up, and every
+    # dollar lost nudges it down. Bounded by min_bet_usdc and max_bet_fraction.
+    confident_stake_pct: float = Field(default=0.08, ge=0.005, le=0.30)  # high-conviction favorite: 8% of bankroll
+    ordinary_stake_pct: float = Field(default=0.035, ge=0.005, le=0.20)  # ordinary backed favorite: 3.5%
+    max_trades_per_cycle: int = Field(default=8, ge=1, le=50)  # upper bound; actual budget scales with bankroll
     min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out

@@ -432,6 +432,18 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         except Exception as e:
             logger.debug("Balance fetch failed, using configured bankroll: %s", e)
 
+    # Trade budget scales with the account: a small wallet takes only its best
+    # couple of shots (spreading $20 across 8 bets just pays fees), while a
+    # larger one can run more concurrent positions. An explicit --max-trades
+    # (e.g. --test-trade) always wins.
+    if max_trades is None and live_bankroll is not None:
+        from agents.risk_agent import _max_trades_for_bankroll
+        max_trades = _max_trades_for_bankroll(live_bankroll)
+        console.print(
+            f"  [dim]Trade budget this cycle: {max_trades} "
+            f"(scaled to ${live_bankroll:.2f} available)[/dim]"
+        )
+
     # Source-of-truth dedup: fetch the markets we ACTUALLY hold on the exchange
     # so we never re-buy one, even if the local trade DB (GitHub cache) was lost
     # or a prior cycle didn't persist.

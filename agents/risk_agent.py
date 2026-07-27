@@ -98,24 +98,66 @@ def _check_rolling_circuit_breaker() -> None:
 
 def _flat_favorite_stake(confidence: float, bankroll: float) -> float:
     """
-    Confidence-tiered, bankroll-aware FLAT stake for a backed favorite.
+    Confidence-scaled stake that grows CONTINUOUSLY with the account.
 
-    Ladder (goal: grow the wallet from ~$37 → $100, then press):
-      • bankroll >= scale_up_bankroll ($100)      → flat_bet_scaled     ($10)
-      • else, confidence >= favorite_confident_conf → flat_bet_confident ($5)
-      • else                                        → flat_bet_base      ($2)
+    Previously this was a flat ladder with a cliff at $100: a $37 wallet and a
+    $99 wallet both bet exactly $5, then the stake doubled the moment the
+    balance ticked over $100. Adding money changed nothing until an arbitrary
+    threshold, which isn't how position sizing should behave.
 
-    Always at least min_bet_usdc and never more than max_bet_fraction of the
-    live bankroll (so the ladder can't over-bet a small account).
+    Now the stake is a PERCENTAGE of the live bankroll, so every dollar earned
+    or deposited immediately makes the next bet slightly larger — and every
+    dollar lost makes it smaller (automatic de-risking on drawdown):
+
+      • confidence >= favorite_confident_conf → confident_stake_pct  (8%)
+      • otherwise                             → ordinary_stake_pct   (3.5%)
+
+    Bounded on both ends: never below min_bet_usdc (exchange minimum, else the
+    order is rejected) and never above max_bet_fraction of bankroll. The legacy
+    flat_bet_* values now act as a sanity CAP so a large account can't size a
+    single favorite absurdly.
+
+    Examples (confident / ordinary):
+      $37 → $2.96 / $1.30      $65 → $5.20 / $2.28
+      $100 → $8.00 / $3.50     $200 → $16.00 / $7.00
     """
-    if bankroll >= settings.scale_up_bankroll:
-        stake = settings.flat_bet_scaled
-    elif confidence >= settings.favorite_confident_conf:
-        stake = settings.flat_bet_confident
-    else:
-        stake = settings.flat_bet_base
-    stake = max(stake, settings.min_bet_usdc)
+    pct = (
+        settings.confident_stake_pct
+        if confidence >= settings.favorite_confident_conf
+        else settings.ordinary_stake_pct
+    )
+    stake = bankroll * pct
+    # Bounds are themselves proportional (max_bet_fraction), so sizing keeps
+    # scaling smoothly instead of flattening against a fixed dollar ceiling —
+    # a $5 cap below $100 would recreate the very plateau this replaced.
+    stake = max(stake, settings.min_bet_usdc)          # exchange minimum
     return float(min(stake, bankroll * settings.max_bet_fraction))
+
+
+def _max_trades_for_bankroll(bankroll: float) -> int:
+    """How many NEW positions to open in one cycle, scaled to account size.
+
+    A $20 account opening 8 positions is spreading itself into dust — each bet
+    is at the exchange minimum, fees dominate, and one bad cycle commits the
+    whole wallet. A larger account can afford more concurrent shots. Scale the
+    per-cycle trade budget with the bankroll instead of using a fixed 8:
+
+      < $50   → 2 trades   (be selective; take only the best)
+      < $100  → 3 trades
+      < $250  → 5 trades
+      >= $250 → max_trades_per_cycle (8)
+
+    Returns at least 1 so a strong signal is never skipped outright.
+    """
+    if bankroll < 50:
+        n = 2
+    elif bankroll < 100:
+        n = 3
+    elif bankroll < 250:
+        n = 5
+    else:
+        n = settings.max_trades_per_cycle
+    return max(1, min(n, settings.max_trades_per_cycle))
 
 
 def _dynamic_kelly_multiplier() -> float:
