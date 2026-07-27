@@ -72,7 +72,12 @@ class Settings(BaseSettings):
     take_profit_pct: float = Field(default=0.60, ge=0.0, le=5.0)  # lock in if position value rises 60% from entry
     min_confidence: float = Field(default=0.45, ge=0.30, le=1.0)  # LEARNING BOOTSTRAP: looser so fast-settling trades place
     max_bet_fraction: float = Field(default=0.25, ge=0.001, le=0.5)   # bigger cap; conviction scaling keeps weak bets small
-    min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)
+    min_liquidity_usdc: float = Field(default=1000.0, ge=0.0)  # ceiling for the scaled floor below
+    # Liquidity is required PROPORTIONATE to our stake, not as a flat $1k: we bet
+    # $2-$10, so demanding $1,000 of book depth rejected ~99% of the venue for no
+    # execution benefit. Require stake x multiple, never below the absolute floor.
+    liquidity_stake_multiple: float = Field(default=25.0, ge=1.0, le=500.0)
+    min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out
     min_time_to_resolution_days: int = Field(default=1, ge=0)    # LEARNING BOOTSTRAP: allow next-few-days markets so they settle fast

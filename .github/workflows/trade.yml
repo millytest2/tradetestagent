@@ -64,6 +64,15 @@ jobs:
           MIN_EDGE: "0.0"                # FAVORITES MODE: back favorites even near fair value (win-rate priority)
           FEE_BUFFER: "0.0"
           MIN_ENTRY_PRICE: "0.68"        # FAVORITES MODE: only bet sides priced >= 68% → targets ~70% win rate
+          # ── Market universe: floors sized to OUR stake, not to a whale's ──
+          # A flat $1000 liquidity / $500 volume floor rejected ~790 of 800
+          # fetched markets, starving the bot of candidates while it bets $2-$10.
+          # Liquidity is now stake-proportionate (25x largest flat = $250) and
+          # volume just proves the market is alive. Quality gates (>=0.68 entry,
+          # trap-veto, past-event, near-certainty) are UNCHANGED.
+          LIQUIDITY_STAKE_MULTIPLE: "25.0"    # need 25x our stake in book depth
+          MIN_LIQUIDITY_FLOOR_ABS: "150.0"    # never trade a book thinner than $150
+          MIN_VOLUME_USDC: "150.0"            # was $500 — proves the market trades, without demanding whale flow
           MIN_TIME_TO_RESOLUTION_DAYS: "0"    # short-term "obvious" plays
           MAX_TIME_TO_RESOLUTION_DAYS: "60"   # ...through ~2-month favorites; widened 30→60 so the bot has fresh favorites to deploy idle cash into (it already holds every <30d one)
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll

@@ -49,31 +49,49 @@ def _slug_event_date_passed(slug: str, grace_days: int = 1) -> bool:
     return age_days > grace_days
 
 
-def _passes_base_filter(market: Market) -> bool:
-    """Return True if the market meets basic quality thresholds."""
-    if market.liquidity_usdc < settings.min_liquidity_usdc:
-        return False
+def _effective_liquidity_floor() -> float:
+    """Liquidity floor scaled to the size we actually bet.
+
+    A fixed $1,000 floor was rejecting ~99% of the venue while our real stake is
+    only $2–$10 — demanding 100-500x the trade size in book depth. What actually
+    matters is that OUR order fills without moving the price, so require a
+    multiple of the largest flat stake instead (with an absolute floor so truly
+    dead books are still excluded). Explicit config still wins if it's lower.
+    """
+    largest_stake = max(
+        settings.flat_bet_base, settings.flat_bet_confident,
+        settings.flat_bet_scaled, settings.min_bet_usdc,
+    )
+    scaled = largest_stake * settings.liquidity_stake_multiple
+    return max(settings.min_liquidity_floor_abs, min(settings.min_liquidity_usdc, scaled))
+
+
+def _passes_base_filter(market: Market) -> tuple[bool, str]:
+    """Return (passes, drop_reason). drop_reason is '' when the market passes."""
+    liq_floor = _effective_liquidity_floor()
+    if market.liquidity_usdc < liq_floor:
+        return False, f"liquidity < ${liq_floor:.0f}"
     if market.volume_24h_usdc < settings.min_volume_usdc:
-        return False
+        return False, f"volume24h < ${settings.min_volume_usdc:.0f}"
     if market.time_to_resolution_days > settings.max_time_to_resolution_days:
-        return False
+        return False, f"resolves > {settings.max_time_to_resolution_days}d"
     # HARD RULE (from PatternAgent postmortem): never trade already-expired markets.
     # time_to_resolution_days < 0 means the deadline has passed.
     if market.time_to_resolution_days < 0:
-        return False
+        return False, "already expired"
     # HARD RULE: never trade a market whose SLUG event date has already passed,
     # even if the exchange's endDate/settlement field still reads as future/
     # unsettled. Catches stale post-event markets the endDate filter misses
     # (e.g. an already-held June primary still listed in July).
     if _slug_event_date_passed(market.slug):
         logger.debug("Skipping past-event market (slug date passed): %s", market.slug)
-        return False
+        return False, "slug event date passed"
     if market.time_to_resolution_days < settings.min_time_to_resolution_days:
-        return False
+        return False, f"resolves < {settings.min_time_to_resolution_days}d"
     # Skip markets that are already at near-certainty prices (>97% or <3%)
     if market.yes_price >= 0.97 or market.yes_price <= 0.03:
-        return False
-    return True
+        return False, "near-certainty (>=97% / <=3%)"
+    return True, ""
 
 
 def _detect_anomaly(market: Market) -> tuple[bool, str]:
@@ -164,10 +182,18 @@ def _priority_score(market: Market, flag_reason: str) -> float:
 
 
 def _flag_and_score(markets: list[Market], source: str) -> list[FlaggedMarket]:
-    """Apply anomaly detection and scoring to a list of markets."""
+    """Apply anomaly detection and scoring to a list of markets.
+
+    Also logs a FUNNEL breakdown of why markets were dropped. Without this the
+    only visible number was "N queued" — when N collapsed from 800 fetched to
+    ~10 there was no way to tell which filter was responsible.
+    """
     flagged: list[FlaggedMarket] = []
+    drops: dict[str, int] = {}
     for m in markets:
-        if not _passes_base_filter(m):
+        ok, why = _passes_base_filter(m)
+        if not ok:
+            drops[why] = drops.get(why, 0) + 1
             continue
         is_flagged, reason = _detect_anomaly(m)
         m.is_flagged = is_flagged
@@ -178,6 +204,14 @@ def _flag_and_score(markets: list[Market], source: str) -> list[FlaggedMarket]:
             flag_reason=(reason or f"{source} base filter pass"),
             priority_score=score,
         ))
+    if drops:
+        breakdown = " | ".join(
+            f"{why}: {n}" for why, n in sorted(drops.items(), key=lambda kv: -kv[1])
+        )
+        logger.info(
+            "Scan funnel [%s] — %d of %d markets passed base filter. Dropped: %s",
+            source, len(flagged), len(markets), breakdown,
+        )
     return flagged
 
 

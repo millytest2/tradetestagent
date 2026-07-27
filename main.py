@@ -602,6 +602,21 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
         f"in {(datetime.utcnow() - cycle_start).seconds}s"
     )
 
+    # ── Capital-starvation diagnosis ──────────────────────────────────────────
+    # A cycle that places 0 trades while holding idle cash used to look identical
+    # to a healthy cycle. State WHY, so "the bot isn't trading" is answerable
+    # from the log alone instead of needing a code read every time.
+    if trades_placed == 0 and live_bankroll is not None and live_bankroll >= 2.0:
+        console.print(
+            f"  [yellow]⚠ 0 trades with ${live_bankroll:.2f} idle cash[/yellow] "
+            f"[dim]— candidate pool was {len(flagged)} market(s) after filters. "
+            f"Cash is NOT the constraint: stakes are flat "
+            f"(${settings.flat_bet_base:.0f}/${settings.flat_bet_confident:.0f}"
+            f"/${settings.flat_bet_scaled:.0f} @${settings.scale_up_bankroll:.0f}), so more "
+            f"cash only helps if more markets qualify. See the 'Scan funnel' line "
+            f"above for which filter is binding.[/dim]"
+        )
+
     # ── Milestone check ───────────────────────────────────────────────────────
     try:
         from utils.notifications import check_and_notify_milestone
