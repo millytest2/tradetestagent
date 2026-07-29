@@ -812,13 +812,29 @@ async def _adopt_untracked_positions() -> int:
         return 0
 
     with SessionLocal() as s:
-        # Any row for this market, at any status — never adopt a market we have
-        # history for, or a settled trade would be resurrected as open.
-        known = {r.market_id for r in s.query(TradeRow.market_id).distinct().all()}
+        # Match on "no OPEN row", not "no row at all". A slug can be settled in
+        # our DB while the exchange still holds the shares — the Oklahoma primary
+        # sat exactly there: not PENDING so settlement skipped it, but "known" so
+        # an all-status guard skipped it too, leaving real money untracked in a
+        # dead zone. Only a PENDING row means we are already tracking it.
+        open_rows = {
+            r.market_id for r in
+            s.query(TradeRow.market_id).filter(TradeRow.outcome == "PENDING").distinct().all()
+        }
+        # Guard against re-adopting forever: if a position we adopted settles in
+        # the DB but lingers on the exchange, adopting it again every cycle would
+        # spawn duplicate rows indefinitely. One adoption per slug is enough.
+        already_adopted = {
+            r.market_id for r in
+            s.query(TradeRow.market_id).filter(TradeRow.notes.like("adopted:%")).distinct().all()
+        }
 
     adopted = 0
     for slug, info in details.items():
-        if slug in known:
+        if slug in open_rows:
+            continue   # already tracked as open
+        if slug in already_adopted:
+            logger.debug("Not re-adopting %s — adopted once already", slug)
             continue
         shares = info.get("shares") or 0.0
         entry = info.get("avg_price")
@@ -846,6 +862,18 @@ async def _adopt_untracked_positions() -> int:
             adopted += 1
         except Exception as e:
             logger.warning("Could not adopt position %s: %s", slug, e)
+
+    # Always state the reconciliation result. The first version of this failed
+    # silently — it skipped every candidate and logged nothing, so the run was
+    # indistinguishable from "there was nothing to adopt".
+    untracked = [s_ for s_ in details if s_ not in open_rows]
+    logger.info(
+        "Position reconcile — exchange holds %d, tracked open %d, adopted %d%s",
+        len(details), len(open_rows), adopted,
+        (" (skipped as already-adopted: "
+         + ", ".join(sorted(s_ for s_ in untracked if s_ in already_adopted)) + ")")
+        if any(s_ in already_adopted for s_ in untracked) else "",
+    )
     return adopted
 
 
