@@ -17,7 +17,7 @@ concurrency:
 jobs:
   trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30   # 4 spaced cycles (~15 min) + settlement/retrain headroom
 
     steps:
       - name: Checkout
@@ -96,10 +96,16 @@ jobs:
           PAUSE_NEW_TRADES: "false"      # flip to "true" to hold positions and open nothing new
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
-        # No --max-trades: the per-cycle trade budget is derived from the LIVE
-        # wallet (see _max_trades_for_bankroll). Passing it here would pin the
-        # budget at 8 and defeat the bankroll scaling.
-        run: python main.py --live --run-once --top-n 35
+        # GitHub throttles scheduled workflows hard: this cron asks for every 20
+        # minutes but actually fires roughly every 105 minutes. Rather than one
+        # check per ~2 hours, run several SPACED cycles inside a single job so
+        # settlements, price moves and newly-listed markets are picked up near
+        # the intended cadence. 4 cycles x 300s ≈ 15 min of coverage per job.
+        #
+        # No --max-trades: the trade budget is derived from the LIVE wallet
+        # (see _max_trades_for_bankroll) and is SHARED across these cycles, so
+        # running 4 of them does not authorise 4x the trades.
+        run: python main.py --live --cycles 4 --cycle-delay 300 --top-n 35
 
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"

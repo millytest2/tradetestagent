@@ -33,6 +33,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 from datetime import datetime, timezone
 
 from rich.console import Console
@@ -63,6 +64,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 console = Console()
+
+# Trades placed across ALL cycles in this process. When a single job runs
+# several cycles (compensating for GitHub throttling the cron schedule), they
+# share one bankroll-scaled trade budget rather than each getting a fresh one.
+_SESSION_TRADES: dict[str, int] = {"placed": 0}
 
 
 # ── Pretty output helpers ─────────────────────────────────────────────────────
@@ -450,13 +456,26 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     # couple of shots (spreading $20 across 8 bets just pays fees), while a
     # larger one can run more concurrent positions. An explicit --max-trades
     # (e.g. --test-trade) always wins.
+    #
+    # The budget is per INVOCATION, not per cycle: when one job runs several
+    # cycles (to compensate for GitHub throttling the schedule), they SHARE one
+    # budget. Otherwise 4 cycles would silently authorise 4x the intended risk.
     if max_trades is None and live_bankroll is not None:
         from agents.risk_agent import _max_trades_for_bankroll
-        max_trades = _max_trades_for_bankroll(live_bankroll)
+        budget = _max_trades_for_bankroll(live_bankroll)
+        already = _SESSION_TRADES["placed"]
+        max_trades = max(0, budget - already)
         console.print(
-            f"  [dim]Trade budget this cycle: {max_trades} "
-            f"(scaled to ${live_bankroll:.2f} available)[/dim]"
+            f"  [dim]Trade budget: {max_trades} remaining of {budget} this "
+            f"invocation (scaled to ${live_bankroll:.2f} available"
+            + (f"; {already} already placed)" if already else ")") + "[/dim]"
         )
+        if max_trades == 0:
+            console.print(
+                "  [yellow]→ Invocation trade budget already spent — managing "
+                "open positions only.[/yellow]"
+            )
+            top_flagged = []
 
     # Source-of-truth dedup: fetch the markets we ACTUALLY hold on the exchange
     # so we never re-buy one, even if the local trade DB (GitHub cache) was lost
@@ -611,6 +630,7 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 running_bankroll = max(0.0, running_bankroll - sz.bet_usdc)
             event_counts[ev] = event_counts.get(ev, 0) + 1   # cap within-cycle too
             event_spend[ev] = event_spend.get(ev, 0.0) + sz.bet_usdc  # $ cap within-cycle
+            _SESSION_TRADES["placed"] += 1   # shared across cycles in this invocation
             trades_placed += 1
             if max_trades and trades_placed >= max_trades:
                 console.print(
@@ -1105,7 +1125,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--cycles", type=int, default=1,
-        help="Number of back-to-back pipeline cycles to run (paper trading only)",
+        help="Number of pipeline cycles to run in this invocation (spaced by --cycle-delay)",
+    )
+    p.add_argument(
+        "--cycle-delay", type=int, default=0,
+        help="Seconds to wait between cycles when --cycles > 1 (lets prices/settlements move)",
     )
     p.add_argument(
         "--paper-blast", action="store_true",
@@ -1241,6 +1265,15 @@ if __name__ == "__main__":
                 console.rule(f"[cyan]Cycle {i+1} / {cycles}[/cyan]")
             asyncio.run(run_pipeline(dry_run=dry_run, top_n=args.top_n,
                                      use_mock=use_mock, max_trades=args.max_trades))
+            # Space cycles apart so each one sees fresh prices, new settlements
+            # and newly-listed markets. Back-to-back cycles would re-read the
+            # identical snapshot and accomplish nothing.
+            if cycles > 1 and i < cycles - 1 and args.cycle_delay > 0:
+                console.print(
+                    f"  [dim]…waiting {args.cycle_delay}s before cycle "
+                    f"{i+2}/{cycles}[/dim]"
+                )
+                time.sleep(args.cycle_delay)
         _print_stats()
     else:
         asyncio.run(main_loop(dry_run=dry_run, interval_seconds=args.interval,
