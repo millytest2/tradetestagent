@@ -74,7 +74,14 @@ jobs:
           MIN_LIQUIDITY_FLOOR_ABS: "150.0"    # never trade a book thinner than $150
           MIN_VOLUME_USDC: "150.0"            # was $500 — proves the market trades, without demanding whale flow
           MIN_TIME_TO_RESOLUTION_DAYS: "0"    # short-term "obvious" plays
-          MAX_TIME_TO_RESOLUTION_DAYS: "60"   # ...through ~2-month favorites; widened 30→60 so the bot has fresh favorites to deploy idle cash into (it already holds every <30d one)
+          # 784 of 800 fetched markets were being dropped by this single filter —
+          # it is THE binding constraint on the candidate pool, dwarfing every
+          # other gate (liquidity now rejects zero). At 60d the bot sees ~5-9
+          # markets, holds all the tradeable ones, and sits on idle cash. Widen
+          # to the code default so there is actually something to choose from;
+          # scan_agent still spreads picks across near/mid/far buckets and mildly
+          # prefers <=45d, so short-dated favorites keep priority.
+          MAX_TIME_TO_RESOLUTION_DAYS: "120"
           KELLY_FRACTION: "0.45"         # bigger bets that scale with edge/bankroll
           MAX_BET_FRACTION: "0.25"       # per-bet cap raised to 25% (conviction scaling keeps weak bets small)
           MAX_OPEN_POSITIONS: "20"       # room for ~20 concurrent plays (the wallet's cash guard is the real limiter on $35)
