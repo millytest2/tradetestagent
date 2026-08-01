@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     confident_stake_pct: float = Field(default=0.08, ge=0.005, le=0.30)  # high-conviction favorite: 8% of bankroll
     ordinary_stake_pct: float = Field(default=0.035, ge=0.005, le=0.20)  # ordinary backed favorite: 3.5%
     max_trades_per_cycle: int = Field(default=8, ge=1, le=50)  # upper bound; actual budget scales with bankroll
+    # Dry powder: stop OPENING positions once cash falls to this share of total
+    # equity. The old floor was a flat $1, i.e. "deploy everything" — which left
+    # no capital for better opportunities and made the account fully dependent on
+    # already-open bets. Managing/exiting existing positions is never blocked.
+    min_cash_reserve_fraction: float = Field(default=0.25, ge=0.0, le=0.9)
     min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out

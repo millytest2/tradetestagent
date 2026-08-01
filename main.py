@@ -443,10 +443,21 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 f"[dim](cash ${cash_base:.2f} + open positions ${positions_mark:.2f}) "
                 f"{goal_str}[/dim]"
             )
-            if live_bankroll < RESERVE_FLOOR:
+            # Keep dry powder. Deploying down to the $1 hard floor leaves nothing
+            # for better setups and makes the account wholly dependent on bets
+            # already placed. Reserve a share of TOTAL equity as cash; exits and
+            # settlement below are unaffected.
+            reserve = max(
+                RESERVE_FLOOR,
+                total_equity * settings.min_cash_reserve_fraction,
+            )
+            if live_bankroll < reserve:
                 console.print(
-                    "  [yellow]→ Available balance below $1 — skipping new "
-                    "trades this cycle (managing open positions only).[/yellow]"
+                    f"  [yellow]→ Cash ${live_bankroll:.2f} at/below the "
+                    f"${reserve:.2f} reserve "
+                    f"({settings.min_cash_reserve_fraction:.0%} of ${total_equity:.2f} "
+                    f"equity) — no new positions this cycle; managing open ones "
+                    f"only.[/yellow]"
                 )
                 top_flagged = []  # no new entries; settlement/exits already ran
         except Exception as e:

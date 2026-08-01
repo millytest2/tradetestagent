@@ -401,9 +401,19 @@ async def evaluate_and_trade(
                 else "ordinary")
         pct = (settings.confident_stake_pct if tier == "confident"
                else settings.ordinary_stake_pct)
+        # Report the stake ACTUALLY applied, not the nominal rate. On a small
+        # account the ordinary rate lands under min_bet_usdc and gets floored, so
+        # logging the nominal 3.5% was simply false — real ordinary stakes were
+        # 4.6-6.1% of bankroll. Say which bound bound it.
+        actual_pct = (flat_stake / bankroll * 100) if bankroll else 0.0
+        bound = ""
+        if abs(flat_stake - settings.min_bet_usdc) < 0.005 and bankroll * pct < settings.min_bet_usdc:
+            bound = f" [floored at ${settings.min_bet_usdc:.2f} min; {pct:.1%} would be ${bankroll * pct:.2f}]"
+        elif abs(flat_stake - bankroll * settings.max_bet_fraction) < 0.005:
+            bound = f" [capped at {settings.max_bet_fraction:.0%} max-bet]"
         logger.info(
-            "Favorite stake $%.2f = %.1f%% of $%.2f bankroll (conf=%.2f, tier=%s)",
-            flat_stake, pct * 100, bankroll, prediction.confidence, tier,
+            "Favorite stake $%.2f = %.1f%% of $%.2f bankroll (conf=%.2f, tier=%s)%s",
+            flat_stake, actual_pct, bankroll, prediction.confidence, tier, bound,
         )
 
     # ── Sizing multipliers ────────────────────────────────────────────────────
