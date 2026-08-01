@@ -157,6 +157,10 @@ def _max_trades_for_bankroll(bankroll: float) -> int:
         n = 5
     else:
         n = settings.max_trades_per_cycle
+    # Running blind (no LLM credits) means the AI veto never fires, so take
+    # fewer shots per invocation until it is back.
+    if not settings.llm_enabled:
+        n = max(1, n // settings.free_mode_trade_budget_divisor)
     return max(1, min(n, settings.max_trades_per_cycle))
 
 

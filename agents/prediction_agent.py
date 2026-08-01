@@ -404,13 +404,33 @@ async def predict_market(
             traps.append(f"model {calibrated:.2f}<<price {market.yes_price:.2f}")
         if features.whale_bid_imbalance < -0.50:
             traps.append(f"whales against {features.whale_bid_imbalance:+.2f}")
+        # DEGRADED MODE. With no LLM credits the AI veto never fires: llm_prob
+        # falls back to xgb_prob, so `calibrated` carries no second opinion, and
+        # the contra-indicator fade then pulls it toward the market price —
+        # mechanically hiding how far the model actually sits below it. Trades
+        # were placed at 0.69-0.90 while the raw model read 0.08-0.39, and the
+        # blended figure never tripped the check above. So when the LLM is
+        # unavailable, test the RAW model directly and refuse the extreme
+        # disagreements. Deliberately a wide bar (not the 0.20 above): the
+        # favorites thesis accepts that a thinly-trained model lags the market,
+        # but not that we buy what it considers near-hopeless.
+        if not settings.llm_enabled:
+            raw_gap = market.yes_price - xgb_prob
+            if raw_gap >= settings.free_mode_max_model_gap:
+                traps.append(
+                    f"FREE MODE: raw model {xgb_prob:.2f} vs price "
+                    f"{market.yes_price:.2f} (gap {raw_gap:.2f} ≥ "
+                    f"{settings.free_mode_max_model_gap:.2f})"
+                )
         if traps:
             logger.info("Favorite trap-veto (%s) — skipping '%s'",
                         "; ".join(traps), market.question[:60])
             return None
         logger.info(
-            "★ FAVORITE BACKED: YES on '%s' at %.3f (model=%.3f, LLM=%s, whale=%+.2f)",
-            market.question[:50], market.yes_price, calibrated, rec,
+            "★ FAVORITE BACKED: YES on '%s' at %.3f (model=%.3f, raw_xgb=%.3f, "
+            "LLM=%s%s, whale=%+.2f)",
+            market.question[:50], market.yes_price, calibrated, xgb_prob, rec,
+            "" if settings.llm_enabled else " [OFFLINE—no AI veto]",
             features.whale_bid_imbalance,
         )
         prediction = Prediction(

@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     # no capital for better opportunities and made the account fully dependent on
     # already-open bets. Managing/exiting existing positions is never blocked.
     min_cash_reserve_fraction: float = Field(default=0.25, ge=0.0, le=0.9)
+    # ── Degraded (FREE) mode: running without LLM credits ─────────────────────
+    # With no AI second opinion the trap-veto loses its main input, so the bot
+    # trades on the market price plus a thinly-trained model. Two brakes:
+    # refuse favorites the RAW model rates far below the price, and take fewer
+    # positions per invocation. Neither applies when the LLM is available.
+    free_mode_max_model_gap: float = Field(default=0.45, ge=0.05, le=1.0)
+    free_mode_trade_budget_divisor: int = Field(default=2, ge=1, le=10)
     min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out
