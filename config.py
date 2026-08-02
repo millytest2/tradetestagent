@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     # positions per invocation. Neither applies when the LLM is available.
     free_mode_max_model_gap: float = Field(default=0.45, ge=0.05, le=1.0)
     free_mode_trade_budget_divisor: int = Field(default=2, ge=1, le=10)
+    # ── Binary-contract exits (favorites mode) ────────────────────────────────
+    # Percent-change bands are the wrong tool for contracts that settle at 0 or
+    # 1. A +60% take-profit needs price 1.31 on a 0.82 entry — unreachable, so
+    # it never fired; a -40% stop fires at 0.49, which is ordinary noise in a
+    # thin market. The exit logic could therefore only ever realize LOSSES.
+    # Use PRICE levels instead, matching the actual thesis: the position is a
+    # claim on the outcome, so hold it to resolution unless the market has
+    # genuinely repriced.
+    favorite_take_profit_price: float = Field(default=0.97, ge=0.5, le=1.0)  # near-certain → bank it, free the capital
+    favorite_stop_price: float = Field(default=0.25, ge=0.0, le=0.6)         # collapse this far = real news, not noise
     min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out

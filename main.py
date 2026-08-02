@@ -957,8 +957,30 @@ async def _manage_open_positions(dry_run: bool = True) -> int:
         if cur is None or not entry or entry <= 0:
             continue  # can't price it → HOLD
         change = (cur - entry) / entry        # +ve = winning, -ve = losing
-        # HOLD unless it crosses a stop-loss or take-profit band
-        if change <= -settings.stop_loss_pct:
+        # Binary contracts settle at 0 or 1, so exits key off PRICE LEVELS, not
+        # percent moves. With percent bands the +60% take-profit needed a price
+        # above 1.0 (unreachable) while the -40% stop tripped on ordinary noise,
+        # so the only exit that could ever fire was a losing one. A favorite is
+        # a claim on the outcome: hold it to resolution unless the market has
+        # genuinely repriced against us.
+        favorites_mode = settings.min_entry_price >= 0.5
+        if favorites_mode:
+            if cur >= settings.favorite_take_profit_price:
+                # Effectively decided — bank it now rather than waiting weeks for
+                # settlement (which has lagged badly) and free the capital.
+                reason, outcome = "take-profit (near-certain)", TradeOutcome.WIN
+            elif cur <= settings.favorite_stop_price:
+                # A fall this deep is an information event, not noise.
+                reason, outcome = "stop-loss (repriced)", TradeOutcome.LOSS
+            else:
+                if change <= -0.30:
+                    try:
+                        from agents.postmortem_agent import run_midflight_review
+                        await run_midflight_review(tid, cur, change * 100)
+                    except Exception as e:
+                        logger.debug("Mid-flight review failed (non-blocking): %s", e)
+                continue  # HOLD to resolution
+        elif change <= -settings.stop_loss_pct:
             reason, outcome = "stop-loss", TradeOutcome.LOSS
         elif change >= settings.take_profit_pct:
             reason, outcome = "take-profit", TradeOutcome.WIN
