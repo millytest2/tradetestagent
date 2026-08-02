@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     # this level. Managing and settling existing positions continues. Set to 0
     # to disable. Exists so a long unsupervised stretch cannot bleed out.
     equity_floor_usdc: float = Field(default=0.0, ge=0.0)
+    # Skip sports contracts: efficiently priced by specialists, and neither our
+    # calibrator (no sports features) nor our research (political/macro news)
+    # has any signal there. Measured at -16% avg vs +3% for politics/econ.
+    exclude_sports_markets: bool = True
     min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out

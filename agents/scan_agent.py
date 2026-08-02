@@ -49,6 +49,39 @@ def _slug_event_date_passed(slug: str, grace_days: int = 1) -> bool:
     return age_days > grace_days
 
 
+_SPORTS_KW = {
+    "mlb", "nba", "wnba", "nfl", "nhl", "ncaa", "atp", "wta", "pga", "lpga",
+    "ufc", "nascar", "epl", "fifa", "uefa", "olympic", "olympics",
+    "baseball", "basketball", "football", "hockey", "tennis", "soccer",
+    "golf", "boxing", "wimbledon", "playoff", "playoffs", "postseason",
+    "superbowl", "worldseries", "stanleycup", "grandslam", "heisman",
+    "division", "conference", "pennant", "cy", "mvp",
+}
+# PM-US slug prefixes seen on sports contracts (aachc-mlb-…, aqc-wnba-…, tec-…)
+_SPORTS_SLUG_PREFIXES = ("aachc-", "aqc-", "tec-")
+
+
+def _is_sports_market(market: Market) -> bool:
+    """True if this contract is a sports outcome.
+
+    We hold no edge here and the record shows it: of the positions opened after
+    the window widened, sports averaged -16% (worst three were all sports) while
+    politics/econ averaged +3%. Sports lines are among the most efficiently
+    priced markets there are — sharp money, deep liquidity, professional
+    modelling — while our calibrator carries no sports features at all and the
+    research pipeline (news/Reddit sentiment) is oriented at politics and macro.
+    Backing a fair-priced sports favorite is a zero-edge bet against specialists,
+    paid for in fees.
+    """
+    slug = (market.slug or "").lower()
+    if slug.startswith(_SPORTS_SLUG_PREFIXES):
+        return True
+    import re as _re
+    words = set(_re.findall(r"[a-z]+", f"{market.question or ''} "
+                                       f"{' '.join(market.tags or [])}".lower()))
+    return bool(words & _SPORTS_KW)
+
+
 def _effective_liquidity_floor() -> float:
     """Liquidity floor scaled to the size we actually bet.
 
@@ -68,6 +101,8 @@ def _effective_liquidity_floor() -> float:
 
 def _passes_base_filter(market: Market) -> tuple[bool, str]:
     """Return (passes, drop_reason). drop_reason is '' when the market passes."""
+    if settings.exclude_sports_markets and _is_sports_market(market):
+        return False, "sports (no edge vs sharp money)"
     liq_floor = _effective_liquidity_floor()
     if market.liquidity_usdc < liq_floor:
         return False, f"liquidity < ${liq_floor:.0f}"
