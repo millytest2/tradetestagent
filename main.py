@@ -451,7 +451,29 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 RESERVE_FLOOR,
                 total_equity * settings.min_cash_reserve_fraction,
             )
-            if live_bankroll < reserve:
+            # Hard drawdown brake for unattended running: below the equity floor
+            # we stop opening anything new, regardless of cash on hand. Exits and
+            # settlement continue so open positions still resolve.
+            if settings.equity_floor_usdc > 0 and total_equity <= settings.equity_floor_usdc:
+                console.print(
+                    f"  [red]⛔ EQUITY FLOOR HIT — ${total_equity:.2f} ≤ "
+                    f"${settings.equity_floor_usdc:.2f}. No new positions will be "
+                    f"opened. Managing and settling existing ones only.[/red]"
+                )
+                try:
+                    from utils.notifications import _send_email
+                    _send_email(
+                        f"Trading bot halted — equity ${total_equity:.2f}",
+                        f"Total equity ${total_equity:.2f} reached the "
+                        f"${settings.equity_floor_usdc:.2f} floor.\n\n"
+                        f"New positions are stopped. Open positions are still "
+                        f"being managed and settled.\n"
+                        f"Cash ${live_bankroll:.2f} | committed ${committed:.2f}",
+                    )
+                except Exception as e:
+                    logger.debug("Halt notification failed: %s", e)
+                top_flagged = []
+            elif live_bankroll < reserve:
                 console.print(
                     f"  [yellow]→ Cash ${live_bankroll:.2f} at/below the "
                     f"${reserve:.2f} reserve "

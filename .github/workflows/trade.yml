@@ -101,6 +101,12 @@ jobs:
           MAX_POSITIONS_PER_EVENT: "1"           # ordinary picks: 1 per event (no stacking weak sub-markets)
           MAX_POSITIONS_PER_EVENT_CONFIDENT: "2" # confident favorites may double up on one event
           PAUSE_NEW_TRADES: "false"      # flip to "true" to hold positions and open nothing new
+          # Unattended-run guardrails (owner away ~2 weeks from 2026-08-02).
+          # Equity was $56.49 at departure; halt NEW positions if it falls to
+          # $40 (~-29%). Open positions keep being managed and settled, so the
+          # 13 pending favorites still resolve and feed the learning loop.
+          EQUITY_FLOOR_USDC: "40.0"
+          MIN_CASH_RESERVE_FRACTION: "0.25"   # keep dry powder; never deploy to zero
           NOTIFY_SMTP_HOST: smtp.gmail.com
           NOTIFY_SMTP_PORT: "587"
         # GitHub throttles scheduled workflows hard: this cron asks for every 20

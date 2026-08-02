@@ -105,6 +105,10 @@ class Settings(BaseSettings):
     # genuinely repriced.
     favorite_take_profit_price: float = Field(default=0.97, ge=0.5, le=1.0)  # near-certain → bank it, free the capital
     favorite_stop_price: float = Field(default=0.25, ge=0.0, le=0.6)         # collapse this far = real news, not noise
+    # Unattended drawdown brake: stop OPENING positions if total equity falls to
+    # this level. Managing and settling existing positions continues. Set to 0
+    # to disable. Exists so a long unsupervised stretch cannot bleed out.
+    equity_floor_usdc: float = Field(default=0.0, ge=0.0)
     min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out
