@@ -123,6 +123,31 @@ jobs:
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"
 
+      # Unattended runs must not fail silently. If the trading step crashed, say
+      # so by email — otherwise a broken bot looks exactly like an idle one, and
+      # nobody is watching the Actions tab for two weeks.
+      - name: Alert on failure
+        if: failure()
+        env:
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
+          NOTIFY_FROM_EMAIL: ${{ secrets.NOTIFY_FROM_EMAIL }}
+          NOTIFY_SMTP_PASSWORD: ${{ secrets.NOTIFY_SMTP_PASSWORD }}
+          NOTIFY_SMTP_HOST: smtp.gmail.com
+          NOTIFY_SMTP_PORT: "587"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python - <<'PY'
+          import os
+          from utils.notifications import _send_email
+          _send_email(
+              "Trading bot RUN FAILED",
+              "A scheduled trading run failed.\n\n"
+              f"Run: {os.environ.get('RUN_URL','(unknown)')}\n\n"
+              "Open positions are untouched. New trades will not be placed until "
+              "a later run succeeds.",
+          )
+          PY
+
       - name: Persist updated database + trained model
         uses: actions/cache/save@v4
         if: always()

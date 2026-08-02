@@ -426,7 +426,20 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             # track toward the $100 goal — not cash alone (which drops as capital
             # moves into positions) nor the old config-based estimate.
             cash_base = cash if cash is not None else live_bankroll
-            total_equity = cash_base + positions_mark
+            # positions_mark is 0 when the P&L pass could not price the book (API
+            # hiccup, or it raised). Treating that as "positions are worth zero"
+            # would understate equity by the whole committed amount and could
+            # trip the equity floor on a transient glitch — freezing trading for
+            # days while nobody is watching. Fall back to cost basis, which is a
+            # far better estimate of position value than zero.
+            positions_value = positions_mark
+            if positions_value <= 0.0 and committed > 0.0:
+                positions_value = committed
+                logger.warning(
+                    "Open positions could not be marked to market — valuing them "
+                    "at cost basis $%.2f for equity/floor checks.", committed,
+                )
+            total_equity = cash_base + positions_value
             console.print(
                 f"  [dim]Equity: {('$%.2f' % total) if total is not None else 'n/a'} | "
                 f"cash: {('$%.2f' % cash) if cash is not None else 'n/a'} | "
@@ -440,8 +453,9 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 goal_str = f"— need +${goal - total_equity:.2f} to reach ${goal:.0f} goal"
             console.print(
                 f"  [{gcol}]Total equity: ${total_equity:.2f}[/{gcol}] "
-                f"[dim](cash ${cash_base:.2f} + open positions ${positions_mark:.2f}) "
-                f"{goal_str}[/dim]"
+                f"[dim](cash ${cash_base:.2f} + open positions ${positions_value:.2f}"
+                + ("" if positions_value == positions_mark else " at cost — unpriced")
+                + f") {goal_str}[/dim]"
             )
             # Keep dry powder. Deploying down to the $1 hard floor leaves nothing
             # for better setups and makes the account wholly dependent on bets
@@ -696,6 +710,12 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
             f"which filter is binding.[/dim]"
         )
 
+    # ── Daily status email ────────────────────────────────────────────────────
+    # One per day, so an unattended run is never silent: it reports equity, the
+    # open book and whether the drawdown floor has halted new positions.
+    if not use_mock:
+        _maybe_send_daily_report(total_equity, live_bankroll)
+
     # ── Milestone check ───────────────────────────────────────────────────────
     try:
         from utils.notifications import check_and_notify_milestone
@@ -818,6 +838,59 @@ async def _reconcile_exchange_positions() -> int:
                     tid, slug, outcome.value, pnl)
         reconciled += 1
     return reconciled
+
+
+def _maybe_send_daily_report(total_equity: float | None, cash: float | None) -> None:
+    """Send one status email per calendar day.
+
+    The existing daily summary lives in main_loop(), which only runs under
+    --daemon. The scheduled workflow runs --cycles, so in practice no report was
+    ever sent — an unattended stretch would produce total silence, including if
+    the bot quietly stopped trading. State is kept in the DB (which is cached
+    between runs) because every job is a fresh process.
+    """
+    from datetime import date
+    from core.database import SessionLocal, SystemUpdateRow, save_system_update
+
+    today = date.today().isoformat()
+    try:
+        with SessionLocal() as s:
+            sent = (
+                s.query(SystemUpdateRow)
+                .filter(SystemUpdateRow.update_type == "daily_report",
+                        SystemUpdateRow.description == today)
+                .first()
+            )
+        if sent:
+            return
+    except Exception as e:
+        logger.debug("Daily-report state check failed: %s", e)
+        return
+
+    try:
+        stats = get_trade_stats()
+        eq = f"${total_equity:.2f}" if total_equity is not None else "n/a"
+        csh = f"${cash:.2f}" if cash is not None else "n/a"
+        floor = settings.equity_floor_usdc
+        halted = (floor > 0 and total_equity is not None and total_equity <= floor)
+        body = (
+            f"Daily status — {today}\n\n"
+            f"Total equity : {eq}\n"
+            f"Cash         : {csh}\n"
+            f"Open/pending : {stats.get('pending', 0)}\n"
+            f"Record       : {stats.get('wins', 0)}W / {stats.get('losses', 0)}L "
+            f"({stats.get('win_rate', 0.0):.1%})\n"
+            f"Realized P&L : ${stats.get('total_pnl_usdc', 0.0):+.2f}\n"
+            f"LLM          : {'ON' if settings.llm_enabled else 'OFF (free mode — reduced risk)'}\n"
+            f"Equity floor : ${floor:.2f}"
+            + ("  ** REACHED — new positions halted **" if halted else "")
+            + "\n"
+        )
+        from utils.notifications import _send_email
+        if _send_email(f"Trading bot daily — equity {eq}", body):
+            save_system_update("daily_report", today, {"equity": total_equity})
+    except Exception as e:
+        logger.debug("Daily report failed (non-blocking): %s", e)
 
 
 async def _adopt_untracked_positions() -> int:
