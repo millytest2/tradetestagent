@@ -222,6 +222,40 @@ What concrete rule or filter would prevent this class of error in the future?"""
 
 # ── Postmortem orchestrator ────────────────────────────────────────────────────
 
+def _record_statistical_lesson(trade: Trade) -> None:
+    """Save a data-derived lesson about a losing trade — no LLM required.
+
+    States what the bucket this trade belongs to has actually done across every
+    settled trade, so the record is auditable and the empirical veto has
+    something concrete to act on.
+    """
+    try:
+        from core.empirical import price_band, market_family, compute_bucket_stats
+        from core.database import save_lesson
+
+        band = price_band(trade.entry_price)
+        fam = market_family(trade.market_id)
+        stats = compute_bucket_stats()
+        parts = []
+        for kind, key in (("price_band", band), ("family", fam)):
+            b = stats.get(f"{kind}:{key}")
+            if b and b.n:
+                parts.append(
+                    f"{kind} '{key}': {b.wins}W/{b.losses}L "
+                    f"({b.win_rate:.0%}) ${b.pnl:+.2f} over {b.n} settled"
+                )
+        if not parts:
+            return
+        save_lesson(
+            "empirical",
+            f"Loss on {trade.market_id} at {trade.entry_price:.3f}. "
+            f"Record for its buckets — " + "; ".join(parts),
+            trade.id,
+        )
+    except Exception as e:
+        logger.debug("Statistical lesson failed (non-blocking): %s", e)
+
+
 async def run_postmortem(trade: Trade) -> Optional[PostmortemReport]:
     """
     Run all 5 postmortem agents in parallel after a losing trade.
@@ -231,9 +265,17 @@ async def run_postmortem(trade: Trade) -> Optional[PostmortemReport]:
         logger.debug("Skipping postmortem — trade %d is not a loss", trade.id or 0)
         return None
     if not settings.anthropic_api_key or not settings.llm_enabled:
-        # FREE MODE: no API calls. Return without saving anything so the trade
-        # stays un-analyzed and gets its postmortem when the LLM is re-enabled.
-        logger.info("LLM disabled — postmortem for trade %d deferred", trade.id or 0)
+        # FREE MODE: no API calls. Previously this returned immediately and saved
+        # nothing, so an extended credit outage meant every loss went unexamined
+        # and the loop learned nothing at all. Record a statistical lesson
+        # instead — it needs no API, and unlike written lessons (which only ever
+        # reach an LLM prompt) it feeds the empirical veto that runs in free
+        # mode. The full 5-agent review still happens when credits return.
+        _record_statistical_lesson(trade)
+        logger.info(
+            "LLM disabled — statistical lesson recorded for trade %d "
+            "(full postmortem deferred)", trade.id or 0,
+        )
         return None
 
     logger.info(

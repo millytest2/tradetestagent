@@ -113,6 +113,13 @@ class Settings(BaseSettings):
     # calibrator (no sports features) nor our research (political/macro news)
     # has any signal there. Measured at -16% avg vs +3% for politics/econ.
     exclude_sports_markets: bool = True
+    # Empirical learning loop (works with no LLM): veto entries whose bucket has
+    # a demonstrably losing record in our own settled trades. Thresholds are
+    # deliberately strict — with ~30 settled trades, a loose bar would ban
+    # categories on noise.
+    empirical_veto_enabled: bool = True
+    empirical_min_samples: int = Field(default=5, ge=3, le=100)
+    empirical_max_win_rate: float = Field(default=0.34, ge=0.0, le=0.6)
     min_liquidity_floor_abs: float = Field(default=150.0, ge=0.0)  # hard floor: exclude dead books
     min_volume_usdc: float = Field(default=500.0, ge=0.0)
     max_time_to_resolution_days: int = Field(default=120, ge=1)  # US futures run months out

@@ -422,6 +422,22 @@ async def predict_market(
                     f"{market.yes_price:.2f} (gap {raw_gap:.2f} ≥ "
                     f"{settings.free_mode_max_model_gap:.2f})"
                 )
+        # Empirical self-check: refuse entries whose bucket (entry-price band or
+        # market family) has a real losing record in OUR OWN settled trades.
+        # Written lessons only ever reach an LLM prompt, so with credits out they
+        # steer nothing; this is the learning loop that still bites in free mode.
+        if settings.empirical_veto_enabled:
+            try:
+                from core.empirical import entry_verdict
+                ok, why = entry_verdict(
+                    market.yes_price, market.slug or "",
+                    min_n=settings.empirical_min_samples,
+                    max_win_rate=settings.empirical_max_win_rate,
+                )
+                if not ok:
+                    traps.append(why)
+            except Exception as e:
+                logger.debug("Empirical veto check failed (non-blocking): %s", e)
         if traps:
             logger.info("Favorite trap-veto (%s) — skipping '%s'",
                         "; ".join(traps), market.question[:60])

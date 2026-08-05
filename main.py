@@ -840,6 +840,23 @@ async def _reconcile_exchange_positions() -> int:
     return reconciled
 
 
+def _empirical_block() -> str:
+    """What the bot has actually learned from its own settled trades."""
+    try:
+        from core.empirical import summarize, losing_buckets
+        lines = summarize()
+        if not lines:
+            return ""
+        bad = losing_buckets()
+        out = "\nRecord by bucket (own settled trades):\n"
+        out += "".join(f"  {l}\n" for l in lines)
+        if bad:
+            out += "  Currently avoided: " + ", ".join(sorted(bad)) + "\n"
+        return out + "\n"
+    except Exception:
+        return ""
+
+
 def _maybe_send_daily_report(total_equity: float | None, cash: float | None) -> None:
     """Send one status email per calendar day.
 
@@ -882,7 +899,8 @@ def _maybe_send_daily_report(total_equity: float | None, cash: float | None) -> 
             f"({stats.get('win_rate', 0.0):.1%})\n"
             f"Realized P&L : ${stats.get('total_pnl_usdc', 0.0):+.2f}\n"
             f"LLM          : {'ON' if settings.llm_enabled else 'OFF (free mode — reduced risk)'}\n"
-            f"Equity floor : ${floor:.2f}"
+            + _empirical_block()
+            + f"Equity floor : ${floor:.2f}"
             + ("  ** REACHED — new positions halted **" if halted else "")
             + "\n"
         )
