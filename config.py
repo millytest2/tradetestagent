@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     # a demonstrably losing record in our own settled trades. Thresholds are
     # deliberately strict — with ~30 settled trades, a loose bar would ban
     # categories on noise.
+    # Correlated-settlement cap. Distinct events resolving on the SAME day are
+    # still one bet in practice: six 2026-11-03 midterm races pass the per-event
+    # rule individually while sharing a national environment and locking capital
+    # until the same date. Cap combined exposure per resolution date.
+    max_settlement_date_exposure_fraction: float = Field(default=0.40, ge=0.05, le=1.0)
     empirical_veto_enabled: bool = True
     empirical_min_samples: int = Field(default=5, ge=3, le=100)
     empirical_max_win_rate: float = Field(default=0.34, ge=0.0, le=0.6)

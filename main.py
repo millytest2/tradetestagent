@@ -550,8 +550,36 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     # Count positions per EVENT (exchange + local DB) so we never stack multiple
     # bets on the same event — e.g. 5 different Wimbledon-winner candidates
     # compete with each other: at most one can win.
+    def _settle_date_key(slug: str) -> str:
+        """The event date embedded in a PM-US slug (…-2026-11-03-…)."""
+        import re
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", slug or "")
+        return m.group(1) if m else ""
+
     event_counts: dict[str, int] = {}
     event_spend: dict[str, float] = {}   # combined $ committed per event this cycle
+    # Combined $ per RESOLUTION DATE. Distinct events that settle the same day
+    # are still correlated: six different 2026-11-03 midterm races are six
+    # separate events by the per-event rule, yet they share one national
+    # environment and all lock capital until the same date. Without this, the
+    # book can quietly become a single bet on one night.
+    date_spend: dict[str, float] = {}
+    try:
+        from core.database import SessionLocal as _SL, TradeRow as _TR
+        with _SL() as _s2:
+            for _r in _s2.query(_TR).filter(_TR.outcome == "PENDING").all():
+                _k = _settle_date_key(_r.market_id or "")
+                if _k:
+                    date_spend[_k] = date_spend.get(_k, 0.0) + (_r.bet_usdc or 0.0)
+        if date_spend and total_equity:
+            _worst = max(date_spend.items(), key=lambda kv: kv[1])
+            console.print(
+                f"  [dim]Settlement-date concentration: {_worst[0]} holds "
+                f"${_worst[1]:.2f} ({_worst[1] / total_equity:.0%} of equity; "
+                f"cap {settings.max_settlement_date_exposure_fraction:.0%})[/dim]"
+            )
+    except Exception as e:
+        logger.debug("Settlement-date exposure seed failed: %s", e)
     try:
         from core.database import SessionLocal, TradeRow
         with SessionLocal() as _s:
@@ -643,6 +671,21 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 if getattr(prediction, "_favorite_flat", False)
                 else settings.min_bet_usdc
             )
+            # Correlated-settlement cap: keep any single resolution date from
+            # dominating the book (see date_spend above).
+            _dk = _settle_date_key(mkt.slug or "")
+            if _dk and total_equity:
+                _date_cap = total_equity * settings.max_settlement_date_exposure_fraction
+                if date_spend.get(_dk, 0.0) + est_stake > _date_cap + 1e-6:
+                    console.print(
+                        f"  → [dim]{question[:45]} — {_dk} already holds "
+                        f"${date_spend.get(_dk, 0.0):.2f}; +${est_stake:.2f} would pass the "
+                        f"${_date_cap:.2f} same-day cap "
+                        f"({settings.max_settlement_date_exposure_fraction:.0%} of equity), "
+                        f"skipping[/dim]"
+                    )
+                    continue
+
             event_cap_usd = running_bankroll * settings.max_event_exposure_fraction
             if event_spend.get(ev, 0.0) + est_stake > event_cap_usd + 1e-6:
                 console.print(
@@ -677,6 +720,9 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
                 running_bankroll = max(0.0, running_bankroll - sz.bet_usdc)
             event_counts[ev] = event_counts.get(ev, 0) + 1   # cap within-cycle too
             event_spend[ev] = event_spend.get(ev, 0.0) + sz.bet_usdc  # $ cap within-cycle
+            _dk2 = _settle_date_key(mkt.slug or "")
+            if _dk2:
+                date_spend[_dk2] = date_spend.get(_dk2, 0.0) + sz.bet_usdc
             _SESSION_TRADES["placed"] += 1   # shared across cycles in this invocation
             trades_placed += 1
             if max_trades and trades_placed >= max_trades:
