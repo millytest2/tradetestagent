@@ -184,15 +184,26 @@ def _priority_score(market: Market, flag_reason: str) -> float:
     else:
         score += min(market.volume_24h_usdc / 5_000, 1.0)
 
-    # Resolution timing: give a mild, flat preference across the tradeable
-    # window and do NOT reward very-soon markets (we don't want everything
-    # resolving tomorrow). Actual spacing across dates is enforced separately
-    # by _spread_by_resolution so each cycle's picks span near/mid/far dates.
+    # Resolution timing — CAPITAL VELOCITY. This previously applied a mild flat
+    # preference and deliberately did not reward soon-resolving markets. That
+    # was defensible at a 30-day window; at 120 days it let six 2026-11-03 races
+    # reach the top and locked ~60% of the book for three months.
+    #
+    # The stated goal is to compound a small account to $100. A favorite pays at
+    # most +11% to +47% when it resolves, so reaching +79% takes roughly five
+    # turns of capital. Those five turns are ~15 months at 90-day holds and ~2
+    # months at 14-day holds — for the SAME edge and the same entry quality.
+    # Holding period, not entry price, is what determines whether the goal is
+    # reachable, so reward speed steeply.
     days = market.time_to_resolution_days
-    if days <= 45:
-        score += 0.75
+    if days <= 14:
+        score += 2.50
+    elif days <= 30:
+        score += 1.75
+    elif days <= 60:
+        score += 0.90
     else:
-        score += 0.25   # long-dated still allowed, slightly deprioritised
+        score += 0.20   # still eligible, but must be clearly better on other merits
 
     # "Obvious win" candidates: strong-but-not-certain favorites (on either
     # side) are worth surfacing — if our model also finds them underpriced they
@@ -298,11 +309,18 @@ def _spread_by_resolution(
                 break
         groups.setdefault(idx, []).append(fm)
 
+    # Weighted round-robin rather than one-each. A flat rotation gave the
+    # longest-dated bucket equal footing with the soonest, which is how
+    # three-month races reached the front of the queue. Draw more from the near
+    # buckets each pass so fast-recycling capital leads, while still keeping
+    # some spread across dates for diversification.
+    weights = {0: 3, 1: 2, 2: 2, 3: 1}   # index → picks per pass; later buckets default to 1
     ordered: list[FlaggedMarket] = []
     while any(groups.values()):
         for i in sorted(groups):
-            if groups[i]:
-                ordered.append(groups[i].pop(0))
+            for _ in range(weights.get(i, 1)):
+                if groups[i]:
+                    ordered.append(groups[i].pop(0))
     return ordered
 
 
