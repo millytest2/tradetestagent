@@ -118,7 +118,13 @@ jobs:
         # No --max-trades: the trade budget is derived from the LIVE wallet
         # (see _max_trades_for_bankroll) and is SHARED across these cycles, so
         # running 4 of them does not authorise 4x the trades.
-        run: python main.py --live --cycles 4 --cycle-delay 300 --top-n 35
+        # 3x240s ≈ 12 min rather than 4x300s ≈ 18.5 min. A long-running job is
+        # exposed to hosted-runner preemption for its whole duration — run 509
+        # was cancelled at 15m02s — and each cancellation risks losing that
+        # cycle's DB write. Shorter jobs keep most of the coverage benefit with
+        # roughly a third less exposure. Positions opened but not persisted are
+        # recovered by _adopt_untracked_positions on the next run.
+        run: python main.py --live --cycles 3 --cycle-delay 240 --top-n 35
 
       - name: Retrain model on settled trades (continuous learning)
         run: python main.py --retrain || echo "Not enough settled trades to retrain yet"
