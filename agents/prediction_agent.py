@@ -362,14 +362,26 @@ async def predict_market(
     # took positions the AI itself flagged as PASS (as happened on every trade
     # in earlier runs). Now a PASS means "no clear edge" and cuts conviction —
     # only a genuinely strong quantitative signal can still get through.
-    rec = (recommendation or "PASS").upper()
-    if rec == "PASS":
+    # Distinguish "the LLM looked and declined" from "the LLM never ran". With
+    # credits exhausted, recommendation is None and this defaulted to "PASS",
+    # applying the penalty on every candidate and logging "LLM recommended PASS"
+    # — an opinion that was never given. That silently biased an already
+    # trade-starved bot further toward inaction, and made the logs untrue.
+    rec = (recommendation or "").upper()
+    llm_ran = bool(settings.llm_enabled and settings.anthropic_api_key and rec)
+    if rec == "PASS" and llm_ran:
         # LEARNING BOOTSTRAP: soften the PASS penalty (was 0.12) so fast-settling
         # trades still place and feed the learning loop. Re-tighten once the
         # model has real settled data to train on.
         confidence = max(0.0, confidence - 0.05)
         logger.info(
             "LLM recommended PASS — confidence −0.05 → %.2f for '%s'",
+            confidence, market.question[:60],
+        )
+    elif not llm_ran:
+        rec = "N/A"   # no LLM opinion exists; do not manufacture one
+        logger.debug(
+            "No LLM opinion available (free mode) — confidence left at %.2f for '%s'",
             confidence, market.question[:60],
         )
 

@@ -73,9 +73,27 @@ _SESSION_TRADES: dict[str, int] = {"placed": 0}
 
 # ── Pretty output helpers ─────────────────────────────────────────────────────
 
+def _probe_llm_once() -> None:
+    """Resolve the real LLM state before anything reports it.
+
+    The credit probe used to run inside run_pipeline, i.e. AFTER the banner was
+    printed, so the banner read its config value and announced "LLM ON" for runs
+    that were entirely free-mode. Every log for days was mislabelled. Probe here
+    instead and flip settings.llm_enabled, so the banner and every downstream
+    check describe the same reality. Idempotent — safe to call repeatedly.
+    """
+    if getattr(settings, "_llm_probed", False):
+        return
+    settings._llm_probed = True
+    if settings.llm_enabled and settings.anthropic_api_key:
+        if not _llm_available():
+            settings.llm_enabled = False
+
+
 def _print_banner() -> None:
     # Echo the EFFECTIVE config every run — several past incidents traced to
     # env/config values silently differing from what we believed was running.
+    _probe_llm_once()   # report the LLM state we will actually run with
     llm_on = bool(settings.llm_enabled and settings.anthropic_api_key)
     console.print(Panel.fit(
         "[bold cyan]Prediction Market Trading Bot[/bold cyan]\n"
@@ -256,15 +274,15 @@ async def run_pipeline(dry_run: bool = True, top_n: int = 10, use_mock: bool = F
     positions_mark = 0.0    # current mark value of open positions (for total equity)
     total_equity = None     # real account value = cash + open positions (set at balance fetch)
 
-    # ── LLM auto-detect: probe credits each cycle and switch modes on the fly ──
-    if not use_mock and settings.llm_enabled and settings.anthropic_api_key:
-        if _llm_available():
+    # ── LLM state (probed once per process, before the banner) ────────────────
+    if not use_mock:
+        _probe_llm_once()
+        if settings.llm_enabled and settings.anthropic_api_key:
             console.print("  [dim]LLM probe OK — full AI mode[/dim]")
         else:
-            settings.llm_enabled = False   # this run only (fresh process next run re-probes)
             console.print(
-                "  [yellow]⚠ LLM unavailable (credits?) — auto FREE MODE for "
-                "this cycle; will re-check next run.[/yellow]"
+                "  [yellow]⚠ LLM unavailable (credits?) — FREE MODE: no AI veto, "
+                "raw-model brake active, trade budget halved.[/yellow]"
             )
 
     # ── Step 0: Settle resolved positions + manage open ones (buy/sell/hold) ───
