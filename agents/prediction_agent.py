@@ -402,11 +402,11 @@ async def predict_market(
                 market.yes_price, settings.min_entry_price, market.question[:60],
             )
             return None
-        if market.yes_price > 0.90:
+        if market.yes_price > settings.favorite_max_entry_price:
             logger.info(
-                "Favorite too thin (YES=%.3f > 0.90; ~%.0f¢ payout not worth the risk) "
-                "— skipping '%s'", market.yes_price, (1 - market.yes_price) * 100,
-                market.question[:55],
+                "Favorite too thin (YES=%.3f > %.2f; ~%.0f¢ payout not worth the risk) "
+                "— skipping '%s'", market.yes_price, settings.favorite_max_entry_price,
+                (1 - market.yes_price) * 100, market.question[:55],
             )
             return None
         traps = []

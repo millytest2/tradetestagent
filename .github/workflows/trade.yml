@@ -105,6 +105,19 @@ jobs:
           # Equity was $56.49 at departure; halt NEW positions if it falls to
           # $40 (~-29%). Open positions keep being managed and settled, so the
           # 13 pending favorites still resolve and feed the learning loop.
+          # Owner is back and has asked to push for the $100 target, so unblock
+          # the two filters that had left the bot with nothing to trade while
+          # ~$37 sat idle:
+          #  - FAVORITE_MAX_ENTRY_PRICE 0.90 -> 0.95. Every remaining candidate
+          #    priced at 0.92; a win pays ~+8.7%, and this is where the
+          #    favorite-longshot bias is strongest.
+          #  - FREE_MODE_MAX_MODEL_GAP 0.45 -> 0.60. This brake vetoes when the
+          #    raw model disagrees with the price, which only protects us if the
+          #    model has skill. It retrained at CV AUC 0.508 (n=33) — a coin
+          #    flip — so at 0.45 it was blocking arbitrarily rather than safely.
+          #    Widened, not removed: genuinely extreme disagreements still veto.
+          FAVORITE_MAX_ENTRY_PRICE: "0.95"
+          FREE_MODE_MAX_MODEL_GAP: "0.60"
           EQUITY_FLOOR_USDC: "40.0"
           MIN_CASH_RESERVE_FRACTION: "0.25"   # keep dry powder; never deploy to zero
           NOTIFY_SMTP_HOST: smtp.gmail.com

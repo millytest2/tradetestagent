@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     # rule individually while sharing a national environment and locking capital
     # until the same date. Cap combined exposure per resolution date.
     max_settlement_date_exposure_fraction: float = Field(default=0.40, ge=0.05, le=1.0)
+    # Upper entry bound. At 0.92 a win pays ~+8.7%, so this band needs a high
+    # hit rate to be worth it — but these are exactly the contracts where the
+    # favorite-longshot bias is strongest, and holding at 0.90 left the bot with
+    # nothing tradeable at all while cash sat idle.
+    favorite_max_entry_price: float = Field(default=0.95, ge=0.5, le=0.99)
     empirical_veto_enabled: bool = True
     empirical_min_samples: int = Field(default=5, ge=3, le=100)
     empirical_max_win_rate: float = Field(default=0.34, ge=0.0, le=0.6)
