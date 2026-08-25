@@ -59,17 +59,31 @@ def _check_rolling_circuit_breaker() -> None:
         raise RuntimeError(f"TRADING PAUSED — {msg}. Delete {CIRCUIT_BREAKER_FILE} to resume.")
 
     try:
+        from datetime import datetime as _dt
         from core.database import SessionLocal, TradeRow
+        # Judge only trades placed under the CURRENT ruleset. This breaker was
+        # scanning all history while its sibling below (the per-trade recent
+        # win-rate check) correctly filters by strategy_epoch — an inconsistency
+        # that latched the bot shut. The last 30 settled trades are dominated by
+        # the pre-fix regime: take-profit was mathematically unreachable so no
+        # winner was ever banked, stop-loss fired on ordinary noise and booked
+        # intact positions as losses, sports contracts were still allowed, and
+        # some positions were untracked entirely. Those code paths are gone;
+        # their failures must not indict the strategy that replaced them.
+        epoch = _dt.fromisoformat(settings.strategy_epoch)
         with SessionLocal() as session:
             recent = (
                 session.query(TradeRow)
-                .filter(TradeRow.outcome.in_(["WIN", "LOSS"]))
+                .filter(
+                    TradeRow.outcome.in_(["WIN", "LOSS"]),
+                    TradeRow.placed_at >= epoch,
+                )
                 .order_by(TradeRow.settled_at.desc())
                 .limit(CIRCUIT_BREAKER_WINDOW)
                 .all()
             )
         if len(recent) < CIRCUIT_BREAKER_WINDOW:
-            return   # not enough data yet
+            return   # not enough post-epoch data to judge — trade on
 
         wins = sum(1 for t in recent if t.outcome == "WIN")
         rate = wins / len(recent)
@@ -77,7 +91,8 @@ def _check_rolling_circuit_breaker() -> None:
         if rate < CIRCUIT_BREAKER_THRESHOLD:
             msg = (
                 f"Win rate {rate:.1%} on last {CIRCUIT_BREAKER_WINDOW} trades "
-                f"fell below {CIRCUIT_BREAKER_THRESHOLD:.0%} threshold. "
+                f"placed since {settings.strategy_epoch} fell below "
+                f"{CIRCUIT_BREAKER_THRESHOLD:.0%} threshold. "
                 f"Strategy may be breaking down. Review before resuming."
             )
             with open(CIRCUIT_BREAKER_FILE, "w") as f:

@@ -64,7 +64,14 @@ class Settings(BaseSettings):
     scale_up_bankroll: float = Field(default=100.0, ge=1.0)  # goal marker: progress is reported against this
     max_positions_per_event_confident: int = Field(default=2, ge=1, le=10)  # allow a 2nd position on one event only for confident favorites
     max_event_exposure_fraction: float = Field(default=0.25, ge=0.01, le=1.0)  # cap COMBINED stake on one event to this fraction of the wallet, so "2 confident positions" can't over-concentrate a correlated outcome (e.g. two YES bets on the same GDP event)
-    strategy_epoch: str = "2026-07-03"  # circuit breaker judges only trades placed on/after this date — trades from before the big bug-fix wave (wrong-side fills, longshots, stacking) don't indict the current strategy
+    # Circuit breakers judge only trades placed on/after this date. Moved to
+    # 2026-08-02, when the exit logic was rewritten: before it, take-profit
+    # required a price above 1.0 (unreachable, so no winner was ever banked)
+    # while stop-loss fired on ordinary noise and booked intact positions as
+    # losses. Sports contracts were also still permitted. Every trade before
+    # that ran under rules that could only realise losses, so their win rate
+    # says nothing about the current strategy.
+    strategy_epoch: str = "2026-08-02"
     allow_short_side: bool = Field(default=False)  # PM-US BUY_SHORT execution is unverified — block NO-side live orders until proven
 
     # ── Position management (SELL / exit rules on open positions) ──────────────
