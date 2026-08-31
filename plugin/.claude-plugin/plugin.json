@@ -1,0 +1,12 @@
+{
+  "name": "claude-flow",
+  "description": "Multi-agent swarm coordination, memory management, SPARC methodology, and intelligent hooks for Claude Code.",
+  "version": "3.0.0",
+  "author": {
+    "name": "ruvnet",
+    "url": "https://github.com/ruvnet"
+  },
+  "homepage": "https://github.com/ruvnet/claude-flow",
+  "repository": "https://github.com/ruvnet/claude-flow",
+  "license": "MIT"
+}
