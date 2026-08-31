@@ -461,17 +461,42 @@ async def predict_market(
             "" if settings.llm_enabled else " [OFFLINE—no AI veto]",
             features.whale_bid_imbalance,
         )
+        # REQUIRE A REAL EDGE, NET OF COSTS.
+        # This path used to set calibrated_yes_probability to the market price
+        # itself and report edge = ~0, i.e. it bought at fair value by design.
+        # Buying at fair value has zero expected value before fees and negative
+        # after them, so no filter, stake rule or holding period could ever make
+        # the strategy profitable — it was arithmetic, not bad luck. 49 trades
+        # produced -$17.31 that way.
+        #
+        # Now the trade must clear our own estimate by more than the round-trip
+        # cost: we only buy when we think the market is actually WRONG, by
+        # enough to pay the fees and leave something over.
+        edge_floor = settings.min_edge + settings.fee_buffer
+        net_edge = calibrated - market.yes_price
+        if net_edge < edge_floor:
+            logger.info(
+                "Favorite rejected — no edge after costs: model %.3f vs price "
+                "%.3f (net %+.3f < required %.3f) for '%s'",
+                calibrated, market.yes_price, net_edge, edge_floor,
+                market.question[:50],
+            )
+            return None
         prediction = Prediction(
             market_id=market.condition_id,
             question=market.question,
             xgb_yes_probability=xgb_prob,
             llm_yes_probability=llm_prob,
-            calibrated_yes_probability=market.yes_price,   # trade at the market prob
+            calibrated_yes_probability=calibrated,   # our estimate, not the price
             market_yes_price=market.yes_price,
-            edge=max(0.0, calibrated - market.yes_price),
-            confidence=min(0.90, market.yes_price),        # favorite's own conviction
+            edge=net_edge,
+            # Conviction now scales with the size of the edge we believe we have,
+            # not with the market price. Price is what we pay, never evidence of
+            # how right we are.
+            confidence=min(0.90, 0.50 + net_edge * 2.0),
             side=MarketSide.YES,
-            reasoning=f"Favorite backed at {market.yes_price:.2f}. {reasoning}"[:500],
+            reasoning=(f"Favorite at {market.yes_price:.2f} with model "
+                       f"{calibrated:.2f} (net edge {net_edge:+.3f}). {reasoning}")[:500],
             should_trade=True,
         )
         prediction._favorite_flat = True   # risk agent: flat-bet, don't Kelly-zero it

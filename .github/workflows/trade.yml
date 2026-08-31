@@ -61,8 +61,13 @@ jobs:
           BANKROLL_USDC: "35.0"          # fallback only — real wallet balance is fetched live each cycle (user withdrew $50; ~$37 remains)
           AB_TESTING_ENABLED: "true"
           MIN_CONFIDENCE: "0.30"         # FAVORITES MODE: loose (the favorite floor + 2-of-3 vote do the filtering)
-          MIN_EDGE: "0.0"                # FAVORITES MODE: back favorites even near fair value (win-rate priority)
-          FEE_BUFFER: "0.0"
+          # A trade must beat our own probability estimate by more than it costs
+          # to place. Both of these were 0.0, which meant "buy at fair value" —
+          # zero expected value before fees, negative after. Observed fills show
+          # ~1% in fees per side, so the buffer covers the round trip and the
+          # min_edge is the margin we actually expect to keep.
+          MIN_EDGE: "0.03"
+          FEE_BUFFER: "0.02"
           MIN_ENTRY_PRICE: "0.68"        # FAVORITES MODE: only bet sides priced >= 68% → targets ~70% win rate
           # ── Market universe: floors sized to OUR stake, not to a whale's ──
           # A flat $1000 liquidity / $500 volume floor rejected ~790 of 800
